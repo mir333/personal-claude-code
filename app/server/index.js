@@ -4,6 +4,8 @@ import { WebSocketServer } from "ws";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import crypto from "crypto";
+import session from "express-session";
 import {
   createAgent,
   listAgents,
@@ -19,9 +21,75 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const server = createServer(app);
 
+const AUTH_PASSWORD = process.env.AUTH_PASSWORD;
+
 app.use(express.json());
 
-// Serve static frontend
+// Session middleware (needed for auth and WebSocket session lookup)
+const sessionMiddleware = session({
+  secret: AUTH_PASSWORD ? crypto.createHash("sha256").update(AUTH_PASSWORD).digest("hex") : crypto.randomBytes(32).toString("hex"),
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 1 week
+  },
+});
+app.use(sessionMiddleware);
+
+// Auth routes (always mounted so client can check)
+app.post("/api/auth/login", (req, res) => {
+  if (!AUTH_PASSWORD) {
+    return res.json({ authenticated: true });
+  }
+  if (req.body.password === AUTH_PASSWORD) {
+    req.session.authenticated = true;
+    return res.json({ authenticated: true });
+  }
+  res.status(401).json({ error: "Wrong password" });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.json({ ok: true });
+  });
+});
+
+app.get("/api/auth/check", (req, res) => {
+  if (!AUTH_PASSWORD) {
+    return res.json({ authenticated: true });
+  }
+  res.json({ authenticated: req.session.authenticated === true });
+});
+
+// Auth guard middleware
+function requireAuth(req, res, next) {
+  if (!AUTH_PASSWORD) return next();
+  if (req.session.authenticated) return next();
+
+  if (req.path.startsWith("/api/")) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  // For page requests, let the SPA handle the redirect
+  return res.status(401).json({ error: "Unauthorized" });
+}
+
+// Apply auth guard to all API routes (except auth endpoints above)
+app.use("/api", requireAuth);
+
+// Serve static frontend — auth guard for HTML pages
+app.use((req, res, next) => {
+  if (!AUTH_PASSWORD) return next();
+  if (req.session.authenticated) return next();
+  // Allow static assets (JS, CSS, images) so the login page can load
+  if (/\.(js|css|png|jpg|jpeg|svg|ico|woff2?|ttf|eot|map)(\?|$)/.test(req.path)) {
+    return next();
+  }
+  // For HTML page requests, serve index.html (the SPA will show login)
+  next();
+});
+
 app.use(express.static(path.join(__dirname, "..", "dist")));
 
 // REST API
@@ -90,7 +158,21 @@ app.get("{*path}", (_req, res) => {
 });
 
 // WebSocket
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (request, socket, head) => {
+  // Parse session from the upgrade request
+  sessionMiddleware(request, {}, () => {
+    if (AUTH_PASSWORD && !request.session?.authenticated) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
+  });
+});
 
 wss.on("connection", (ws) => {
   ws.on("message", async (raw) => {

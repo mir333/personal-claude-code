@@ -3,6 +3,7 @@ import { Send, Trash2, Menu } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import Markdown from "./components/Markdown.jsx";
+import LoginScreen from "./components/LoginScreen.jsx";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -15,6 +16,7 @@ import { useUsageStats } from "./hooks/useUsageStats.js";
 import StatusBar from "./components/StatusBar.jsx";
 
 export default function App() {
+  const [authenticated, setAuthenticated] = useState(null); // null = loading
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [conversations, setConversations] = useState({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -102,9 +104,17 @@ export default function App() {
   })();
 
   useEffect(() => {
+    fetch("/api/auth/check")
+      .then((r) => r.json())
+      .then((data) => setAuthenticated(data.authenticated))
+      .catch(() => setAuthenticated(false));
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
     fetchAgents();
     fetchDirectories();
-  }, [fetchAgents, fetchDirectories]);
+  }, [authenticated, fetchAgents, fetchDirectories]);
 
   useEffect(() => {
     if (!selectedAgentId) return;
@@ -165,6 +175,14 @@ export default function App() {
       delete next[id];
       return next;
     });
+  }
+
+  if (authenticated === null) {
+    return <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">Loading...</div>;
+  }
+
+  if (!authenticated) {
+    return <LoginScreen onSuccess={() => setAuthenticated(true)} />;
   }
 
   return (
