@@ -1,5 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { v4 as uuidv4 } from "uuid";
+import { mkdirSync } from "fs";
 
 const agents = new Map();
 
@@ -54,6 +55,9 @@ export async function sendMessage(id, text, onEvent) {
 
   agent.status = "busy";
   agent.history.push({ role: "user", content: text, timestamp: Date.now() });
+
+  // Ensure working directory exists (spawn fails with ENOENT if cwd is missing)
+  mkdirSync(agent.workingDirectory, { recursive: true });
 
   const abortController = new AbortController();
   agent.abortController = abortController;
