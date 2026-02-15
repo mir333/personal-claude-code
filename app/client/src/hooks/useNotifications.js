@@ -13,8 +13,15 @@ export function useNotifications() {
 
   const toggle = useCallback(async () => {
     if (!enabled) {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") return;
+      // Request permission but toggle on regardless — notify() will
+      // gracefully skip if the browser ultimately denies.
+      if (typeof Notification !== "undefined") {
+        try {
+          await Notification.requestPermission();
+        } catch {
+          // Some browsers throw instead of resolving; ignore.
+        }
+      }
       localStorage.setItem(STORAGE_KEY, "true");
       setEnabled(true);
     } else {
@@ -25,7 +32,8 @@ export function useNotifications() {
 
   const notify = useCallback(
     (title, options) => {
-      if (!enabled || Notification.permission !== "granted") return;
+      if (!enabled) return;
+      if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
 
       if (navigator.serviceWorker?.controller) {
         navigator.serviceWorker.ready.then((reg) => {
