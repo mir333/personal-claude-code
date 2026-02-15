@@ -1,12 +1,25 @@
 import { useState } from "react";
 
+function isValidWorkDir(dir) {
+  const normalized = dir.replace(/\/+$/, "");
+  return normalized.startsWith("/workspace/") && normalized.length > "/workspace/".length;
+}
+
 export default function NewAgentForm({ onSubmit, onCancel }) {
   const [name, setName] = useState("");
-  const [workingDirectory, setWorkingDirectory] = useState("/workspace");
+  const [workingDirectory, setWorkingDirectory] = useState("/workspace/");
+  const [error, setError] = useState("");
 
   function handleSubmit(e) {
     e.preventDefault();
-    if (name.trim()) onSubmit(name.trim(), workingDirectory.trim());
+    const dir = workingDirectory.trim();
+    if (!name.trim()) return;
+    if (!isValidWorkDir(dir)) {
+      setError("Must be a subfolder of /workspace (e.g. /workspace/my-project)");
+      return;
+    }
+    setError("");
+    onSubmit(name.trim(), dir);
   }
 
   return (
@@ -26,6 +39,7 @@ export default function NewAgentForm({ onSubmit, onCancel }) {
         onChange={(e) => setWorkingDirectory(e.target.value)}
         className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
       />
+      {error && <p className="text-red-400 text-xs">{error}</p>}
       <div className="flex gap-2">
         <button
           type="submit"
