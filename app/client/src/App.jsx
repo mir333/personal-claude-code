@@ -144,7 +144,7 @@ export default function App() {
     // Compute contextual suggestions
     let sugg = [];
     if (lastEntry.type === "stats") {
-      sugg = ["Continue", "Summarize changes"];
+      sugg = ["Continue", "Summarize changes", "Commit changes", "Push code"];
     } else if (lastEntry.type === "error") {
       sugg = ["Try again", "Explain the error"];
     } else if (lastEntry.type === "context_cleared") {
