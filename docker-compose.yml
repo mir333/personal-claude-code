@@ -1,0 +1,61 @@
+# Docker Compose equivalent of:
+# https://github.com/anthropics/claude-code/blob/main/.devcontainer/devcontainer.json
+#
+# Usage:
+#   docker compose up -d
+#   docker compose exec claude-code zsh
+#
+# Then run `claude` inside the container.
+
+services:
+  claude-code:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: claude-code
+
+    # From runArgs: --cap-add=SYS_PTRACE, --cap-add=NET_RAW
+    cap_add:
+      - SYS_PTRACE
+      - NET_RAW
+
+    # From runArgs: --security-opt seccomp=unconfined
+    security_opt:
+      - seccomp=unconfined
+
+    # From remoteUser
+    user: node
+
+    # From containerEnv
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      CLAUDE_CONFIG_DIR: "/home/node/.claude"
+      POWERLEVEL9K_DISABLE_GITSTATUS: "true"
+
+    # From workspaceMount + mounts
+    volumes:
+      # Workspace bind mount (from workspaceMount)
+      - /data/claude:/workspace:delegated
+      # Persistent bash history (from mounts)
+      - claude-code-bashhistory:/commandhistory
+      # Persistent Claude config (from mounts)
+      - claude-code-config:/home/node/.claude
+
+    working_dir: /workspace
+
+    ports:
+      - "3001:3001"
+
+    # Start web UI and keep container running
+    command: /usr/local/bin/entrypoint.sh
+
+    # Note: postStartCommand "sudo /usr/local/bin/init-firewall.sh"
+    # must be run manually after the container starts:
+    #   docker compose exec claude-code sudo /usr/local/bin/init-firewall.sh
+    #
+    # Or uncomment the following to run it automatically via entrypoint wrapper:
+    # entrypoint: ["/bin/sh", "-c", "sudo /usr/local/bin/init-firewall.sh && exec sleep infinity"]
+
+volumes:
+  claude-code-bashhistory:
+  claude-code-config:
