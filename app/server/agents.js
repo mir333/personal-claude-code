@@ -128,7 +128,14 @@ export async function sendMessage(id, text, onEvent) {
           content: resultText,
           timestamp: Date.now(),
         });
-        onEvent({ type: "done", result: resultText, cost: message.total_cost_usd });
+        onEvent({
+          type: "done",
+          result: resultText,
+          cost: message.total_cost_usd,
+          usage: message.usage || null,
+          numTurns: message.num_turns || 0,
+          durationMs: message.duration_ms || 0,
+        });
       }
     }
   } catch (err) {

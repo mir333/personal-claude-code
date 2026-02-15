@@ -10,6 +10,8 @@ import { useAgents } from "./hooks/useAgents.js";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useWorkspace } from "./hooks/useWorkspace.js";
 import { useNotifications } from "./hooks/useNotifications.js";
+import { useSessionStats } from "./hooks/useSessionStats.js";
+import StatusBar from "./components/StatusBar.jsx";
 
 export default function App() {
   const [selectedAgentId, setSelectedAgentId] = useState(null);
@@ -17,6 +19,7 @@ export default function App() {
   const { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
+  const { stats, recordUsage } = useSessionStats();
   const messagesEndRef = useRef(null);
 
   const handleWsMessage = useCallback(
@@ -46,6 +49,7 @@ export default function App() {
         });
       } else if (type === "done") {
         updateAgentStatus(agentId, "idle");
+        recordUsage(rest);
         const agent = agents.find((a) => a.id === agentId);
         notify("Agent finished", { body: agent?.name || agentId });
       } else if (type === "error") {
@@ -57,7 +61,7 @@ export default function App() {
         notify("Agent error", { body: rest.message });
       }
     },
-    [updateAgentStatus, agents, notify]
+    [updateAgentStatus, agents, notify, recordUsage]
   );
 
   const { send, connected } = useWebSocket(handleWsMessage);
@@ -105,13 +109,9 @@ export default function App() {
         toggleNotifications={toggleNotifications}
       />
       <div className="flex-1 flex flex-col">
+        <StatusBar stats={stats} connected={connected} />
         {selectedAgentId ? (
           <>
-            {!connected && (
-              <div className="px-4 py-1.5 bg-yellow-900/50 text-yellow-300 text-xs text-center">
-                Reconnecting to server...
-              </div>
-            )}
             <ScrollArea className="flex-1 p-4">
               {selectedConversation.map((msg, i) => (
                 <div key={i} className="mb-2 text-sm">
