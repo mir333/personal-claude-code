@@ -38,12 +38,12 @@ function ModelCosts({ modelCosts, prefix }) {
   ));
 }
 
-export default function StatusBar({ usage, connected, contextInfo }) {
+export default function StatusBar({ usage, connected, contextInfo, className }) {
   const { session, weekly } = usage;
   const pct = contextInfo ? Math.min(100, (contextInfo.used / contextInfo.contextWindow) * 100) : 0;
 
   return (
-    <div className="flex items-center gap-3 px-4 py-1.5 border-b border-border bg-card text-xs text-muted-foreground select-none overflow-x-auto">
+    <div className={`flex items-center flex-wrap gap-x-3 gap-y-1 px-4 py-1.5 border-b border-border bg-card text-xs text-muted-foreground select-none overflow-x-auto ${className || ""}`}>
       <span className="flex items-center gap-1.5 shrink-0">
         <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-green-500" : "bg-yellow-500 animate-pulse"}`} />
         {connected ? "Connected" : "Reconnecting"}

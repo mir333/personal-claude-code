@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Send, Trash2 } from "lucide-react";
+import { Send, Trash2, Menu } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import Markdown from "./components/Markdown.jsx";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import { useAgents } from "./hooks/useAgents.js";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useWorkspace } from "./hooks/useWorkspace.js";
@@ -16,6 +17,7 @@ import StatusBar from "./components/StatusBar.jsx";
 export default function App() {
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [conversations, setConversations] = useState({});
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
@@ -125,6 +127,11 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [selectedConversation]);
 
+  function handleSelectAgent(id) {
+    setSelectedAgentId(id);
+    setSidebarOpen(false);
+  }
+
   function handleSend(text) {
     if (!selectedAgentId || !text.trim()) return;
     setConversations((prev) => ({
@@ -162,19 +169,44 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-background text-foreground">
-      <Sidebar
-        agents={agents}
-        selectedId={selectedAgentId}
-        onSelect={setSelectedAgentId}
-        onCreate={createAgent}
-        onDelete={handleDeleteAgent}
-        directories={directories}
-        findAgentByWorkDir={findAgentByWorkDir}
-        notificationsEnabled={notificationsEnabled}
-        toggleNotifications={toggleNotifications}
-      />
-      <div className="flex-1 flex flex-col">
-        <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} />
+      {/* Mobile backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar: always visible on md+, slide-over on mobile */}
+      <div className={cn(
+        "fixed inset-y-0 left-0 z-40 transition-transform duration-200 md:static md:translate-x-0",
+        sidebarOpen ? "translate-x-0" : "-translate-x-full"
+      )}>
+        <Sidebar
+          agents={agents}
+          selectedId={selectedAgentId}
+          onSelect={handleSelectAgent}
+          onCreate={createAgent}
+          onDelete={handleDeleteAgent}
+          directories={directories}
+          findAgentByWorkDir={findAgentByWorkDir}
+          notificationsEnabled={notificationsEnabled}
+          toggleNotifications={toggleNotifications}
+        />
+      </div>
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex items-center border-b border-border bg-card">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden shrink-0 ml-2"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Menu className="h-5 w-5" />
+          </Button>
+          <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} className="flex-1 border-b-0" />
+        </div>
         {selectedAgentId ? (
           <>
             <ScrollArea className="flex-1 p-4">
