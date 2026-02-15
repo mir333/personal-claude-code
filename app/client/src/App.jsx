@@ -49,6 +49,7 @@ export default function App() {
   );
 
   const { send, connected } = useWebSocket(handleWsMessage);
+  const selectedConversation = conversations[selectedAgentId] || [];
 
   useEffect(() => {
     fetchAgents();
@@ -76,8 +77,6 @@ export default function App() {
       return next;
     });
   }
-
-  const selectedConversation = conversations[selectedAgentId] || [];
 
   return (
     <div className="flex h-screen bg-gray-950 text-gray-100">
