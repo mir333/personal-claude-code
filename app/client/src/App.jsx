@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Send, Trash2, Menu } from "lucide-react";
+import { Send, Trash2, Menu, TerminalSquare } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
+import QuestionCard from "./components/QuestionCard.jsx";
 import Markdown from "./components/Markdown.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
 import SuggestionBar from "./components/SuggestionBar.jsx";
@@ -15,13 +16,16 @@ import { useWorkspace } from "./hooks/useWorkspace.js";
 import { useNotifications } from "./hooks/useNotifications.js";
 import { useUsageStats } from "./hooks/useUsageStats.js";
 import StatusBar from "./components/StatusBar.jsx";
+import Terminal from "./components/Terminal.jsx";
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(null); // null = loading
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [conversations, setConversations] = useState({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir } = useAgents();
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const terminalDataRef = useRef(null);
+  const { agents, gitStatuses, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
@@ -31,6 +35,13 @@ export default function App() {
     (msg) => {
       const { agentId, type, ...rest } = msg;
       if (!agentId) return;
+
+      if (type === "terminal_output") {
+        if (terminalDataRef.current) {
+          terminalDataRef.current(msg.data);
+        }
+        return;
+      }
 
       if (type === "text_delta") {
         setConversations((prev) => {
@@ -69,6 +80,7 @@ export default function App() {
         });
         updateAgentStatus(agentId, "idle");
         refreshUsage();
+        fetchGitStatus(agentId);
         const agent = agents.find((a) => a.id === agentId);
         notify("Agent finished", { body: agent?.name || agentId });
       } else if (type === "error") {
@@ -80,10 +92,25 @@ export default function App() {
         notify("Agent error", { body: rest.message });
       }
     },
-    [updateAgentStatus, agents, notify, refreshUsage]
+    [updateAgentStatus, agents, notify, refreshUsage, fetchGitStatus]
   );
 
-  const { send, connected } = useWebSocket(handleWsMessage);
+  const handleServerRestart = useCallback(() => {
+    setConversations((prev) => {
+      const next = {};
+      for (const [agentId, conv] of Object.entries(prev)) {
+        // Only add indicator if there are existing messages and last entry isn't already a context_cleared
+        if (conv.length > 0 && conv[conv.length - 1].type !== "context_cleared") {
+          next[agentId] = [...conv, { type: "context_cleared", timestamp: Date.now() }];
+        } else {
+          next[agentId] = conv;
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  const { send, connected } = useWebSocket(handleWsMessage, handleServerRestart);
   const selectedConversation = conversations[selectedAgentId] || [];
 
   // Derive context window info from the last stats entry after the most recent context_cleared
@@ -263,12 +290,13 @@ export default function App() {
           agents={agents}
           selectedId={selectedAgentId}
           onSelect={handleSelectAgent}
-          onCreate={createAgent}
+          onCreate={async (name, dir) => { const a = await createAgent(name, dir); fetchDirectories(); return a; }}
           onDelete={handleDeleteAgent}
           directories={directories}
           findAgentByWorkDir={findAgentByWorkDir}
           notificationsEnabled={notificationsEnabled}
           toggleNotifications={toggleNotifications}
+          gitStatuses={gitStatuses}
         />
       </div>
 
@@ -282,72 +310,104 @@ export default function App() {
           >
             <Menu className="h-5 w-5" />
           </Button>
-          <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} className="flex-1 border-b-0" />
+          <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} onCompact={selectedAgentId ? handleClearContext : null} className="flex-1 border-b-0" />
+          {selectedAgentId && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn("shrink-0 mr-2", terminalOpen && "text-primary")}
+              onClick={() => setTerminalOpen((v) => !v)}
+              title="Toggle Claude CLI"
+            >
+              <TerminalSquare className="h-5 w-5" />
+            </Button>
+          )}
         </div>
         {selectedAgentId ? (
           <>
-            <ScrollArea className="flex-1 p-4">
-              {selectedConversation.map((msg, i) => (
-                <div key={i} className="mb-2 text-sm">
-                  {msg.type === "user" && (
-                    <div className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
-                      {msg.text}
+            {!terminalOpen && (
+              <div className="flex flex-col min-h-0 flex-1">
+                <ScrollArea className="flex-1 p-4">
+                  {selectedConversation.map((msg, i) => (
+                    <div key={i} className="mb-2 text-sm">
+                      {msg.type === "user" && (
+                        <div className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
+                          {msg.text}
+                        </div>
+                      )}
+                      {msg.type === "assistant_stream" && (
+                        <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2">
+                          <Markdown>{msg.text}</Markdown>
+                        </div>
+                      )}
+                      {msg.type === "tool_call" && msg.tool === "AskUserQuestion" ? (
+                        <QuestionCard
+                          input={msg.input}
+                          output={selectedConversation.find(
+                            (m) => m.type === "tool_result" && m.toolUseId === msg.toolUseId
+                          )?.output}
+                        />
+                      ) : msg.type === "tool_call" && (
+                        <ToolCallCard
+                          tool={msg.tool}
+                          input={msg.input}
+                          output={selectedConversation.find(
+                            (m) => m.type === "tool_result" && m.toolUseId === msg.toolUseId
+                          )?.output}
+                        />
+                      )}
+                      {msg.type === "tool_result" && null}
+                      {msg.type === "stats" && (
+                        <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground py-1.5 px-2">
+                          {msg.cost != null && <span>${msg.cost < 0.01 ? msg.cost.toFixed(4) : msg.cost.toFixed(2)}</span>}
+                          {msg.usage && <span>{((msg.usage.input_tokens || 0) / 1000).toFixed(1)}k in</span>}
+                          {msg.usage && <span>{((msg.usage.output_tokens || 0) / 1000).toFixed(1)}k out</span>}
+                          {msg.numTurns > 0 && <span>{msg.numTurns} {msg.numTurns === 1 ? "turn" : "turns"}</span>}
+                          {msg.durationMs > 0 && <span>{(msg.durationMs / 1000).toFixed(1)}s</span>}
+                          {msg.modelUsage && Object.entries(msg.modelUsage).map(([model, mu]) => {
+                            const cost = mu.costUSD || 0;
+                            const inTok = mu.inputTokens || 0;
+                            const outTok = mu.outputTokens || 0;
+                            return (
+                              <span key={model} className="inline-flex items-center gap-1 rounded-md bg-muted/50 border border-border px-1.5 py-0.5">
+                                <span className="font-medium text-foreground/70">{model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}</span>
+                                <span>${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}</span>
+                                <span className="text-muted-foreground/60">{(inTok / 1000).toFixed(1)}k/{(outTok / 1000).toFixed(1)}k</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {msg.type === "context_cleared" && (
+                        <div className="flex items-center gap-3 my-3">
+                          <div className="flex-1 border-t border-dashed border-yellow-500/50" />
+                          <span className="text-xs text-yellow-500 font-medium whitespace-nowrap">Context cleared</span>
+                          <div className="flex-1 border-t border-dashed border-yellow-500/50" />
+                        </div>
+                      )}
+                      {msg.type === "error" && (
+                        <div className="max-w-2xl bg-destructive/20 text-destructive rounded-lg px-4 py-2">
+                          {msg.message}
+                        </div>
+                      )}
                     </div>
-                  )}
-                  {msg.type === "assistant_stream" && (
-                    <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2">
-                      <Markdown>{msg.text}</Markdown>
-                    </div>
-                  )}
-                  {msg.type === "tool_call" && (
-                    <ToolCallCard
-                      tool={msg.tool}
-                      input={msg.input}
-                      output={selectedConversation.find(
-                        (m) => m.type === "tool_result" && m.toolUseId === msg.toolUseId
-                      )?.output}
-                    />
-                  )}
-                  {msg.type === "tool_result" && null}
-                  {msg.type === "stats" && (
-                    <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground py-1.5 px-2">
-                      {msg.cost != null && <span>${msg.cost < 0.01 ? msg.cost.toFixed(4) : msg.cost.toFixed(2)}</span>}
-                      {msg.usage && <span>{((msg.usage.input_tokens || 0) / 1000).toFixed(1)}k in</span>}
-                      {msg.usage && <span>{((msg.usage.output_tokens || 0) / 1000).toFixed(1)}k out</span>}
-                      {msg.numTurns > 0 && <span>{msg.numTurns} {msg.numTurns === 1 ? "turn" : "turns"}</span>}
-                      {msg.durationMs > 0 && <span>{(msg.durationMs / 1000).toFixed(1)}s</span>}
-                      {msg.modelUsage && Object.entries(msg.modelUsage).map(([model, mu]) => {
-                        const cost = mu.costUSD || 0;
-                        const inTok = mu.inputTokens || 0;
-                        const outTok = mu.outputTokens || 0;
-                        return (
-                          <span key={model} className="inline-flex items-center gap-1 rounded-md bg-muted/50 border border-border px-1.5 py-0.5">
-                            <span className="font-medium text-foreground/70">{model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}</span>
-                            <span>${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}</span>
-                            <span className="text-muted-foreground/60">{(inTok / 1000).toFixed(1)}k/{(outTok / 1000).toFixed(1)}k</span>
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {msg.type === "context_cleared" && (
-                    <div className="flex items-center gap-3 my-3">
-                      <div className="flex-1 border-t border-dashed border-yellow-500/50" />
-                      <span className="text-xs text-yellow-500 font-medium whitespace-nowrap">Context cleared</span>
-                      <div className="flex-1 border-t border-dashed border-yellow-500/50" />
-                    </div>
-                  )}
-                  {msg.type === "error" && (
-                    <div className="max-w-2xl bg-destructive/20 text-destructive rounded-lg px-4 py-2">
-                      {msg.message}
-                    </div>
-                  )}
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </ScrollArea>
-            <SuggestionBar suggestions={suggestions} options={options} onSelect={handleSend} />
-            <ChatInput onSend={handleSend} onClearContext={handleClearContext} connected={connected} />
+                  ))}
+                  <div ref={messagesEndRef} />
+                </ScrollArea>
+                <SuggestionBar suggestions={suggestions} options={options} onSelect={handleSend} />
+                <ChatInput onSend={handleSend} onClearContext={handleClearContext} connected={connected} />
+              </div>
+            )}
+            {terminalOpen && (
+              <div className="flex-1 bg-[#1a1a1a]">
+                <Terminal
+                  agentId={selectedAgentId}
+                  send={send}
+                  visible={terminalOpen}
+                  onDataRef={terminalDataRef}
+                />
+              </div>
+            )}
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">

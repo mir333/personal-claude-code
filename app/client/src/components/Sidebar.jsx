@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -12,6 +12,25 @@ const STATUS_COLORS = {
   error: "text-red-500",
 };
 
+const GIT_STATE = {
+  dirty: { color: "text-yellow-500", label: "Uncommitted changes" },
+  ahead: { color: "text-blue-500", label: "Unpushed commits" },
+  clean: { color: "text-green-500", label: "Up to date" },
+};
+
+function GitStatus({ git }) {
+  if (!git || !git.isRepo) return null;
+  const info = GIT_STATE[git.state] || GIT_STATE.clean;
+  return (
+    <div className={cn("flex items-center gap-1 text-xs", info.color)} title={info.label}>
+      <GitBranch className="h-3 w-3 shrink-0" />
+      <span className="truncate">{git.branch}</span>
+      {git.state === "dirty" && <span>*</span>}
+      {git.state === "ahead" && git.unpushed > 0 && <span>{git.unpushed}↑</span>}
+    </div>
+  );
+}
+
 export default function Sidebar({
   agents,
   selectedId,
@@ -22,6 +41,7 @@ export default function Sidebar({
   findAgentByWorkDir,
   notificationsEnabled,
   toggleNotifications,
+  gitStatuses = {},
 }) {
   const [showForm, setShowForm] = useState(false);
 
@@ -82,7 +102,10 @@ export default function Sidebar({
                 )}
               >
                 <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="truncate flex-1">{dir.name}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate">{dir.name}</div>
+                  {agent && <GitStatus git={gitStatuses[agent.id]} />}
+                </div>
                 {agent && (
                   <Circle
                     className={cn("h-2.5 w-2.5 shrink-0 fill-current", STATUS_COLORS[agent.status] || "text-muted-foreground")}
@@ -120,6 +143,7 @@ export default function Sidebar({
                     <div className="min-w-0 flex-1">
                       <div className="truncate">{agent.name}</div>
                       <div className="text-xs text-muted-foreground truncate">{agent.workingDirectory}</div>
+                      <GitStatus git={gitStatuses[agent.id]} />
                     </div>
                     <button
                       onClick={(e) => {

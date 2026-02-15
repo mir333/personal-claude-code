@@ -1,4 +1,4 @@
-import { Activity, Coins, ArrowDownToLine, ArrowUpFromLine, Database, CalendarDays, Gauge } from "lucide-react";
+import { Activity, Coins, ArrowDownToLine, ArrowUpFromLine, Database, CalendarDays, Gauge, AlertTriangle, Eraser } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 
 function formatTokens(n) {
@@ -38,7 +38,7 @@ function ModelCosts({ modelCosts, prefix }) {
   ));
 }
 
-export default function StatusBar({ usage, connected, contextInfo, className }) {
+export default function StatusBar({ usage, connected, contextInfo, onCompact, className }) {
   const { session, weekly } = usage;
   const pct = contextInfo ? Math.min(100, (contextInfo.used / contextInfo.contextWindow) * 100) : 0;
 
@@ -66,6 +66,24 @@ export default function StatusBar({ usage, connected, contextInfo, className }) 
             </span>
             <span>{formatTokens(contextInfo.used)}/{formatTokens(contextInfo.contextWindow)}</span>
           </span>
+
+          {pct >= 70 && (
+            <span className={`flex items-center gap-1 shrink-0 font-medium ${pct >= 90 ? "text-red-500" : "text-yellow-500"}`}>
+              <AlertTriangle className="h-3 w-3" />
+              {pct >= 90 ? "Context almost full!" : "Context running low"}
+            </span>
+          )}
+
+          {onCompact && (
+            <button
+              onClick={onCompact}
+              className="flex items-center gap-1 shrink-0 rounded px-1.5 py-0.5 text-xs font-medium bg-muted hover:bg-muted/80 text-foreground/70 hover:text-foreground transition-colors"
+              title="Clear context to free up space"
+            >
+              <Eraser className="h-3 w-3" />
+              Compact
+            </button>
+          )}
         </>
       )}
 

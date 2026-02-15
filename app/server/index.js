@@ -4,6 +4,7 @@ import { WebSocketServer } from "ws";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { execFile } from "child_process";
 import crypto from "crypto";
 import session from "express-session";
 import {
@@ -16,10 +17,18 @@ import {
   sendMessage,
 } from "./agents.js";
 import { getUsageStats } from "./usage.js";
+import {
+  spawnTerminal,
+  getTerminal,
+  killTerminal,
+  resizeTerminal,
+  killAllTerminals,
+} from "./terminals.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const server = createServer(app);
+const bootId = crypto.randomUUID();
 
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD;
 
@@ -102,6 +111,8 @@ app.post("/api/agents", (req, res) => {
   if (normalized === "/workspace" || !normalized.startsWith("/workspace/")) {
     return res.status(400).json({ error: "workingDirectory must be a subfolder of /workspace (e.g. /workspace/my-project)" });
   }
+  // Ensure the workspace directory exists
+  fs.mkdirSync(normalized, { recursive: true });
   const agent = createAgent(name, normalized);
   res.status(201).json(agent);
 });
@@ -152,6 +163,44 @@ app.get("/api/agents/:id/history", (req, res) => {
   res.json(history);
 });
 
+function gitExec(args, cwd) {
+  return new Promise((resolve) => {
+    execFile("git", args, { cwd, timeout: 5000 }, (err, stdout) => {
+      if (err) resolve(null);
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+app.get("/api/agents/:id/git-status", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const cwd = agent.workingDirectory;
+
+  // Check if it's a git repo
+  const topLevel = await gitExec(["rev-parse", "--show-toplevel"], cwd);
+  if (topLevel === null) {
+    return res.json({ isRepo: false });
+  }
+
+  const [branch, status, ahead] = await Promise.all([
+    gitExec(["rev-parse", "--abbrev-ref", "HEAD"], cwd),
+    gitExec(["status", "--porcelain"], cwd),
+    gitExec(["rev-list", "--count", "@{upstream}..HEAD"], cwd),
+  ]);
+
+  const dirty = status !== null && status.length > 0;
+  const unpushed = ahead !== null ? parseInt(ahead, 10) : 0;
+
+  // "dirty" = uncommitted changes, "ahead" = committed but not pushed, "clean" = all pushed
+  let state = "clean";
+  if (dirty) state = "dirty";
+  else if (unpushed > 0) state = "ahead";
+
+  res.json({ isRepo: true, branch: branch || "unknown", state, unpushed });
+});
+
 // SPA fallback (Express 5 requires named wildcard)
 app.get("{*path}", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
@@ -175,6 +224,11 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 wss.on("connection", (ws) => {
+  const connectionTerminals = new Set(); // track terminals opened by this connection
+
+  // Send boot ID so clients can detect server restarts
+  ws.send(JSON.stringify({ type: "welcome", bootId }));
+
   ws.on("message", async (raw) => {
     let data;
     try {
@@ -194,7 +248,33 @@ wss.on("connection", (ws) => {
           JSON.stringify({ type: "error", agentId: data.agentId, message: err.message })
         );
       }
+    } else if (data.type === "terminal_start" && data.agentId) {
+      const agent = getAgent(data.agentId);
+      if (!agent) {
+        ws.send(JSON.stringify({ type: "error", message: "Agent not found" }));
+        return;
+      }
+      const term = spawnTerminal(data.agentId, agent.workingDirectory);
+      connectionTerminals.add(data.agentId);
+      term.onData((output) => {
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({ type: "terminal_output", agentId: data.agentId, data: output }));
+        }
+      });
+    } else if (data.type === "terminal_input" && data.agentId && data.data) {
+      const term = getTerminal(data.agentId);
+      if (term) term.write(data.data);
+    } else if (data.type === "terminal_resize" && data.agentId && data.cols && data.rows) {
+      resizeTerminal(data.agentId, data.cols, data.rows);
+    } else if (data.type === "terminal_stop" && data.agentId) {
+      killTerminal(data.agentId);
+      connectionTerminals.delete(data.agentId);
     }
+  });
+
+  ws.on("close", () => {
+    killAllTerminals(connectionTerminals);
+    connectionTerminals.clear();
   });
 });
 

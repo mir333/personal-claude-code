@@ -10,11 +10,12 @@ function isValidWorkDir(dir) {
 export default function NewAgentForm({ onSubmit, onCancel }) {
   const [name, setName] = useState("");
   const [workingDirectory, setWorkingDirectory] = useState("/workspace/");
+  const [dirTouched, setDirTouched] = useState(false);
   const [error, setError] = useState("");
 
   function handleSubmit(e) {
     e.preventDefault();
-    const dir = workingDirectory.trim();
+    const dir = workingDirectory.trim().replace(/\/+$/, "");
     if (!name.trim()) return;
     if (!isValidWorkDir(dir)) {
       setError("Must be a subfolder of /workspace (e.g. /workspace/my-project)");
@@ -29,17 +30,27 @@ export default function NewAgentForm({ onSubmit, onCancel }) {
       <Input
         placeholder="Project name"
         value={name}
-        onChange={(e) => setName(e.target.value)}
+        onChange={(e) => {
+          const val = e.target.value;
+          setName(val);
+          if (!dirTouched) {
+            const slug = val.toLowerCase().replace(/\s+/g, "-");
+            setWorkingDirectory("/workspace/" + slug);
+          }
+        }}
         autoFocus
       />
       <Input
         placeholder="Working directory"
         value={workingDirectory}
-        onChange={(e) => setWorkingDirectory(e.target.value)}
+        onChange={(e) => {
+          setDirTouched(true);
+          setWorkingDirectory(e.target.value);
+        }}
       />
       {error && <p className="text-destructive text-xs">{error}</p>}
       <div className="flex gap-2">
-        <Button type="submit" size="sm" className="flex-1">
+        <Button type="submit" size="sm" className="flex-1" disabled={!name.trim()}>
           Create
         </Button>
         <Button type="button" variant="ghost" size="sm" className="flex-1" onClick={onCancel}>

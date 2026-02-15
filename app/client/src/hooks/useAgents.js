@@ -2,10 +2,19 @@ import { useState, useCallback } from "react";
 
 export function useAgents() {
   const [agents, setAgents] = useState([]);
+  const [gitStatuses, setGitStatuses] = useState({}); // agentId -> { isRepo, branch, state, unpushed }
 
   const fetchAgents = useCallback(async () => {
     const res = await fetch("/api/agents");
-    setAgents(await res.json());
+    const list = await res.json();
+    setAgents(list);
+    // Fetch git status for all agents
+    for (const a of list) {
+      fetch(`/api/agents/${a.id}/git-status`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => { if (data) setGitStatuses((prev) => ({ ...prev, [a.id]: data })); })
+        .catch(() => {});
+    }
   }, []);
 
   const createAgent = useCallback(async (name, workingDirectory) => {
@@ -37,5 +46,21 @@ export function useAgents() {
     [agents]
   );
 
-  return { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir };
+  const fetchGitStatus = useCallback(async (agentId) => {
+    try {
+      const res = await fetch(`/api/agents/${agentId}/git-status`);
+      if (res.ok) {
+        const data = await res.json();
+        setGitStatuses((prev) => ({ ...prev, [agentId]: data }));
+      }
+    } catch {}
+  }, []);
+
+  const fetchAllGitStatuses = useCallback(async () => {
+    const current = agents;
+    if (current.length === 0) return;
+    await Promise.all(current.map((a) => fetchGitStatus(a.id)));
+  }, [agents, fetchGitStatus]);
+
+  return { agents, gitStatuses, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses };
 }
