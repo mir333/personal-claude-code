@@ -8,12 +8,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAgents } from "./hooks/useAgents.js";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useWorkspace } from "./hooks/useWorkspace.js";
+import { useNotifications } from "./hooks/useNotifications.js";
 
 export default function App() {
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [conversations, setConversations] = useState({});
   const { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
+  const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
   const messagesEndRef = useRef(null);
 
   const handleWsMessage = useCallback(
@@ -43,15 +45,18 @@ export default function App() {
         });
       } else if (type === "done") {
         updateAgentStatus(agentId, "idle");
+        const agent = agents.find((a) => a.id === agentId);
+        notify("Agent finished", { body: agent?.name || agentId });
       } else if (type === "error") {
         setConversations((prev) => {
           const conv = prev[agentId] || [];
           return { ...prev, [agentId]: [...conv, { type: "error", message: rest.message }] };
         });
         updateAgentStatus(agentId, "error");
+        notify("Agent error", { body: rest.message });
       }
     },
-    [updateAgentStatus]
+    [updateAgentStatus, agents, notify]
   );
 
   const { send, connected } = useWebSocket(handleWsMessage);
@@ -95,6 +100,8 @@ export default function App() {
         onDelete={handleDeleteAgent}
         directories={directories}
         findAgentByWorkDir={findAgentByWorkDir}
+        notificationsEnabled={notificationsEnabled}
+        toggleNotifications={toggleNotifications}
       />
       <div className="flex-1 flex flex-col">
         {selectedAgentId ? (

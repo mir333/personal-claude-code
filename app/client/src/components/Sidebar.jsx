@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderOpen, Plus, Circle } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -20,6 +20,8 @@ export default function Sidebar({
   onDelete,
   directories,
   findAgentByWorkDir,
+  notificationsEnabled,
+  toggleNotifications,
 }) {
   const [showForm, setShowForm] = useState(false);
 
@@ -40,8 +42,21 @@ export default function Sidebar({
 
   return (
     <div className="w-72 border-r border-border flex flex-col h-full bg-sidebar text-sidebar-foreground">
-      <div className="p-4 pb-3">
+      <div className="p-4 pb-3 flex items-center justify-between">
         <h1 className="text-lg font-semibold tracking-tight">Claude Agents</h1>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0"
+          onClick={toggleNotifications}
+          title={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
+        >
+          {notificationsEnabled ? (
+            <BellRing className="h-4 w-4" />
+          ) : (
+            <BellOff className="h-4 w-4 text-muted-foreground" />
+          )}
+        </Button>
       </div>
       <Separator />
       <ScrollArea className="flex-1">
