@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import { useAgents } from "./hooks/useAgents.js";
@@ -8,6 +8,7 @@ export default function App() {
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [conversations, setConversations] = useState({});
   const { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus } = useAgents();
+  const messagesEndRef = useRef(null);
 
   const handleWsMessage = useCallback(
     (msg) => {
@@ -53,6 +54,10 @@ export default function App() {
     fetchAgents();
   }, [fetchAgents]);
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [selectedConversation]);
+
   function handleSend(text) {
     if (!selectedAgentId || !text.trim()) return;
     setConversations((prev) => ({
@@ -86,6 +91,11 @@ export default function App() {
       <div className="flex-1 flex flex-col">
         {selectedAgentId ? (
           <>
+            {!connected && (
+              <div className="px-4 py-1.5 bg-yellow-900/50 text-yellow-300 text-xs text-center">
+                Reconnecting to server...
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto p-4">
               {selectedConversation.map((msg, i) => (
                 <div key={i} className="mb-2 text-sm">
@@ -110,6 +120,7 @@ export default function App() {
                   )}
                 </div>
               ))}
+              <div ref={messagesEndRef} />
             </div>
             <ChatInput onSend={handleSend} connected={connected} />
           </>
