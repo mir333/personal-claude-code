@@ -54,8 +54,8 @@ app.get("/api/agents/:id/history", (req, res) => {
   res.json(history);
 });
 
-// SPA fallback
-app.get("*", (_req, res) => {
+// SPA fallback (Express 5 requires named wildcard)
+app.get("{*path}", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
 });
 
