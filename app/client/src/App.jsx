@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Send } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
+import Markdown from "./components/Markdown.jsx";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -120,8 +121,8 @@ export default function App() {
                     </div>
                   )}
                   {msg.type === "assistant_stream" && (
-                    <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2 whitespace-pre-wrap">
-                      {msg.text}
+                    <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2">
+                      <Markdown>{msg.text}</Markdown>
                     </div>
                   )}
                   {msg.type === "tool_call" && (
