@@ -27,7 +27,7 @@ app.post("/api/agents", (req, res) => {
   if (!name || !workingDirectory) {
     return res.status(400).json({ error: "name and workingDirectory are required" });
   }
-  const normalized = path.normalize(workingDirectory);
+  const normalized = path.normalize(workingDirectory).replace(/\/+$/, "");
   if (normalized === "/workspace" || !normalized.startsWith("/workspace/")) {
     return res.status(400).json({ error: "workingDirectory must be a subfolder of /workspace (e.g. /workspace/my-project)" });
   }
