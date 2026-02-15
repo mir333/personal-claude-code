@@ -61,9 +61,10 @@ export async function sendMessage(id, text, onEvent) {
   try {
     const options = {
       cwd: agent.workingDirectory,
-      permissionMode: "acceptEdits",
+      permissionMode: "bypassPermissions",
       includePartialMessages: true,
       abortSignal: abortController.signal,
+      settingSources: ["user", "project"],
     };
 
     if (agent.sessionId) {
