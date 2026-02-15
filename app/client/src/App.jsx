@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Send } from "lucide-react";
+import { Send, Trash2 } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import Markdown from "./components/Markdown.jsx";
@@ -10,7 +10,7 @@ import { useAgents } from "./hooks/useAgents.js";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useWorkspace } from "./hooks/useWorkspace.js";
 import { useNotifications } from "./hooks/useNotifications.js";
-import { useSessionStats } from "./hooks/useSessionStats.js";
+import { useUsageStats } from "./hooks/useUsageStats.js";
 import StatusBar from "./components/StatusBar.jsx";
 
 export default function App() {
@@ -19,7 +19,7 @@ export default function App() {
   const { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
-  const { stats, recordUsage } = useSessionStats();
+  const { usage, refresh: refreshUsage } = useUsageStats();
   const messagesEndRef = useRef(null);
 
   const handleWsMessage = useCallback(
@@ -48,8 +48,22 @@ export default function App() {
           return { ...prev, [agentId]: [...conv, { type: "tool_result", toolUseId: rest.toolUseId, output: rest.output }] };
         });
       } else if (type === "done") {
+        setConversations((prev) => {
+          const conv = prev[agentId] || [];
+          return {
+            ...prev,
+            [agentId]: [...conv, {
+              type: "stats",
+              cost: rest.cost,
+              usage: rest.usage,
+              modelUsage: rest.modelUsage,
+              numTurns: rest.numTurns,
+              durationMs: rest.durationMs,
+            }],
+          };
+        });
         updateAgentStatus(agentId, "idle");
-        recordUsage(rest);
+        refreshUsage();
         const agent = agents.find((a) => a.id === agentId);
         notify("Agent finished", { body: agent?.name || agentId });
       } else if (type === "error") {
@@ -61,16 +75,51 @@ export default function App() {
         notify("Agent error", { body: rest.message });
       }
     },
-    [updateAgentStatus, agents, notify, recordUsage]
+    [updateAgentStatus, agents, notify, refreshUsage]
   );
 
   const { send, connected } = useWebSocket(handleWsMessage);
   const selectedConversation = conversations[selectedAgentId] || [];
 
+  // Derive context window info from the last stats entry after the most recent context_cleared
+  const contextInfo = (() => {
+    const conv = selectedConversation;
+    let lastClearIdx = -1;
+    for (let i = conv.length - 1; i >= 0; i--) {
+      if (conv[i].type === "context_cleared") { lastClearIdx = i; break; }
+    }
+    for (let i = conv.length - 1; i > lastClearIdx; i--) {
+      if (conv[i].type === "stats" && conv[i].usage) {
+        const u = conv[i].usage;
+        if (u.contextWindow) {
+          return { contextWindow: u.contextWindow, used: (u.input_tokens || 0) + (u.output_tokens || 0) };
+        }
+      }
+    }
+    return null;
+  })();
+
   useEffect(() => {
     fetchAgents();
     fetchDirectories();
   }, [fetchAgents, fetchDirectories]);
+
+  useEffect(() => {
+    if (!selectedAgentId) return;
+    // Only load if no entries exist yet (avoid overwriting active session)
+    if (conversations[selectedAgentId]?.length) return;
+    fetch(`/api/agents/${selectedAgentId}/history`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((entries) => {
+        if (entries.length > 0) {
+          setConversations((prev) => {
+            if (prev[selectedAgentId]?.length) return prev;
+            return { ...prev, [selectedAgentId]: entries };
+          });
+        }
+      })
+      .catch(() => {});
+  }, [selectedAgentId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -83,6 +132,22 @@ export default function App() {
       [selectedAgentId]: [...(prev[selectedAgentId] || []), { type: "user", text }],
     }));
     send({ type: "message", agentId: selectedAgentId, text });
+  }
+
+  async function handleClearContext() {
+    if (!selectedAgentId) return;
+    try {
+      const res = await fetch(`/api/agents/${selectedAgentId}/clear-context`, { method: "POST" });
+      if (res.ok) {
+        setConversations((prev) => ({
+          ...prev,
+          [selectedAgentId]: [
+            ...(prev[selectedAgentId] || []),
+            { type: "context_cleared", timestamp: Date.now() },
+          ],
+        }));
+      }
+    } catch {}
   }
 
   async function handleDeleteAgent(id) {
@@ -109,7 +174,7 @@ export default function App() {
         toggleNotifications={toggleNotifications}
       />
       <div className="flex-1 flex flex-col">
-        <StatusBar stats={stats} connected={connected} />
+        <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} />
         {selectedAgentId ? (
           <>
             <ScrollArea className="flex-1 p-4">
@@ -135,6 +200,34 @@ export default function App() {
                     />
                   )}
                   {msg.type === "tool_result" && null}
+                  {msg.type === "stats" && (
+                    <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground py-1.5 px-2">
+                      {msg.cost != null && <span>${msg.cost < 0.01 ? msg.cost.toFixed(4) : msg.cost.toFixed(2)}</span>}
+                      {msg.usage && <span>{((msg.usage.input_tokens || 0) / 1000).toFixed(1)}k in</span>}
+                      {msg.usage && <span>{((msg.usage.output_tokens || 0) / 1000).toFixed(1)}k out</span>}
+                      {msg.numTurns > 0 && <span>{msg.numTurns} {msg.numTurns === 1 ? "turn" : "turns"}</span>}
+                      {msg.durationMs > 0 && <span>{(msg.durationMs / 1000).toFixed(1)}s</span>}
+                      {msg.modelUsage && Object.entries(msg.modelUsage).map(([model, mu]) => {
+                        const cost = mu.costUSD || 0;
+                        const inTok = mu.inputTokens || 0;
+                        const outTok = mu.outputTokens || 0;
+                        return (
+                          <span key={model} className="inline-flex items-center gap-1 rounded-md bg-muted/50 border border-border px-1.5 py-0.5">
+                            <span className="font-medium text-foreground/70">{model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}</span>
+                            <span>${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}</span>
+                            <span className="text-muted-foreground/60">{(inTok / 1000).toFixed(1)}k/{(outTok / 1000).toFixed(1)}k</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {msg.type === "context_cleared" && (
+                    <div className="flex items-center gap-3 my-3">
+                      <div className="flex-1 border-t border-dashed border-yellow-500/50" />
+                      <span className="text-xs text-yellow-500 font-medium whitespace-nowrap">Context cleared</span>
+                      <div className="flex-1 border-t border-dashed border-yellow-500/50" />
+                    </div>
+                  )}
                   {msg.type === "error" && (
                     <div className="max-w-2xl bg-destructive/20 text-destructive rounded-lg px-4 py-2">
                       {msg.message}
@@ -144,7 +237,7 @@ export default function App() {
               ))}
               <div ref={messagesEndRef} />
             </ScrollArea>
-            <ChatInput onSend={handleSend} connected={connected} />
+            <ChatInput onSend={handleSend} onClearContext={handleClearContext} connected={connected} />
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -156,7 +249,7 @@ export default function App() {
   );
 }
 
-function ChatInput({ onSend, connected }) {
+function ChatInput({ onSend, onClearContext, connected }) {
   const [text, setText] = useState("");
 
   function handleSubmit(e) {
@@ -170,6 +263,17 @@ function ChatInput({ onSend, connected }) {
   return (
     <form onSubmit={handleSubmit} className="p-4 border-t border-border">
       <div className="flex gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={onClearContext}
+          disabled={!connected}
+          title="Clear context"
+          className="text-muted-foreground hover:text-yellow-500"
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
         <Input
           value={text}
           onChange={(e) => setText(e.target.value)}

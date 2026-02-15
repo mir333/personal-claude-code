@@ -1,6 +1,8 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { mkdirSync } from "fs";
+import { loadConversation, appendEntry } from "./storage.js";
+import { recordUsage } from "./usage.js";
 
 const agents = new Map();
 
@@ -14,6 +16,7 @@ export function createAgent(name, workingDirectory) {
     history: [],
     sessionId: null,
     abortController: null,
+    textBuffer: "",
   };
   agents.set(id, agent);
   return agent;
@@ -45,7 +48,19 @@ export function deleteAgent(id) {
 export function getHistory(id) {
   const agent = agents.get(id);
   if (!agent) return null;
-  return agent.history;
+  return loadConversation(agent.workingDirectory);
+}
+
+export function clearContext(id) {
+  const agent = agents.get(id);
+  if (!agent) return false;
+  agent.sessionId = null;
+  agent.history = [];
+  appendEntry(agent.workingDirectory, {
+    type: "context_cleared",
+    timestamp: Date.now(),
+  });
+  return true;
 }
 
 export async function sendMessage(id, text, onEvent) {
@@ -55,6 +70,10 @@ export async function sendMessage(id, text, onEvent) {
 
   agent.status = "busy";
   agent.history.push({ role: "user", content: text, timestamp: Date.now() });
+  agent.textBuffer = "";
+
+  // Persist user message
+  appendEntry(agent.workingDirectory, { type: "user", text });
 
   // Ensure working directory exists (spawn fails with ENOENT if cwd is missing)
   mkdirSync(agent.workingDirectory, { recursive: true });
@@ -87,6 +106,7 @@ export async function sendMessage(id, text, onEvent) {
       if (message.type === "stream_event") {
         const event = message.event;
         if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+          agent.textBuffer += event.delta.text;
           onEvent({ type: "text_delta", text: event.delta.text });
         }
       }
@@ -95,12 +115,14 @@ export async function sendMessage(id, text, onEvent) {
       if (message.type === "assistant") {
         for (const block of message.message.content) {
           if (block.type === "tool_use") {
-            onEvent({
+            const entry = {
               type: "tool_call",
               tool: block.name,
               input: block.input,
               toolUseId: block.id,
-            });
+            };
+            appendEntry(agent.workingDirectory, entry);
+            onEvent(entry);
           }
         }
       }
@@ -109,13 +131,15 @@ export async function sendMessage(id, text, onEvent) {
       if (message.type === "user") {
         for (const block of message.message.content) {
           if (block.type === "tool_result") {
-            onEvent({
+            const entry = {
               type: "tool_result",
               toolUseId: block.tool_use_id,
               output: typeof block.content === "string"
                 ? block.content
                 : JSON.stringify(block.content),
-            });
+            };
+            appendEntry(agent.workingDirectory, entry);
+            onEvent(entry);
           }
         }
       }
@@ -128,19 +152,41 @@ export async function sendMessage(id, text, onEvent) {
           content: resultText,
           timestamp: Date.now(),
         });
-        onEvent({
+
+        // Flush accumulated text buffer as a single assistant entry
+        if (agent.textBuffer) {
+          appendEntry(agent.workingDirectory, { type: "assistant_stream", text: agent.textBuffer });
+          agent.textBuffer = "";
+        }
+
+        const doneEvent = {
           type: "done",
           result: resultText,
           cost: message.total_cost_usd,
           usage: message.usage || null,
+          modelUsage: message.modelUsage || null,
           numTurns: message.num_turns || 0,
           durationMs: message.duration_ms || 0,
+        };
+        recordUsage(doneEvent);
+
+        // Persist request stats as a conversation entry
+        appendEntry(agent.workingDirectory, {
+          type: "stats",
+          cost: doneEvent.cost,
+          usage: doneEvent.usage,
+          modelUsage: doneEvent.modelUsage,
+          numTurns: doneEvent.numTurns,
+          durationMs: doneEvent.durationMs,
         });
+
+        onEvent(doneEvent);
       }
     }
   } catch (err) {
     if (err.name !== "AbortError") {
       agent.status = "error";
+      appendEntry(agent.workingDirectory, { type: "error", message: err.message });
       onEvent({ type: "error", message: err.message });
       return;
     }

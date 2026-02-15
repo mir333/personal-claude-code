@@ -10,8 +10,10 @@ import {
   getAgent,
   deleteAgent,
   getHistory,
+  clearContext,
   sendMessage,
 } from "./agents.js";
+import { getUsageStats } from "./usage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -65,9 +67,20 @@ app.get("/api/workspace", async (_req, res) => {
   }
 });
 
+app.get("/api/usage", (_req, res) => {
+  res.json(getUsageStats());
+});
+
+app.post("/api/agents/:id/clear-context", (req, res) => {
+  const ok = clearContext(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Agent not found" });
+  res.json({ ok: true });
+});
+
 app.get("/api/agents/:id/history", (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
   const history = getHistory(req.params.id);
-  if (!history) return res.status(404).json({ error: "Agent not found" });
   res.json(history);
 });
 
