@@ -1,0 +1,92 @@
+import express from "express";
+import { createServer } from "http";
+import { WebSocketServer } from "ws";
+import path from "path";
+import { fileURLToPath } from "url";
+import {
+  createAgent,
+  listAgents,
+  getAgent,
+  deleteAgent,
+  getHistory,
+  sendMessage,
+} from "./agents.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+const server = createServer(app);
+
+app.use(express.json());
+
+// Serve static frontend
+app.use(express.static(path.join(__dirname, "..", "dist")));
+
+// REST API
+app.post("/api/agents", (req, res) => {
+  const { name, workingDirectory } = req.body;
+  if (!name || !workingDirectory) {
+    return res.status(400).json({ error: "name and workingDirectory are required" });
+  }
+  const agent = createAgent(name, workingDirectory);
+  res.status(201).json(agent);
+});
+
+app.get("/api/agents", (_req, res) => {
+  res.json(listAgents());
+});
+
+app.get("/api/agents/:id", (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+  const { id, name, workingDirectory, status } = agent;
+  res.json({ id, name, workingDirectory, status });
+});
+
+app.delete("/api/agents/:id", (req, res) => {
+  const deleted = deleteAgent(req.params.id);
+  if (!deleted) return res.status(404).json({ error: "Agent not found" });
+  res.status(204).end();
+});
+
+app.get("/api/agents/:id/history", (req, res) => {
+  const history = getHistory(req.params.id);
+  if (!history) return res.status(404).json({ error: "Agent not found" });
+  res.json(history);
+});
+
+// SPA fallback
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
+});
+
+// WebSocket
+const wss = new WebSocketServer({ server, path: "/ws" });
+
+wss.on("connection", (ws) => {
+  ws.on("message", async (raw) => {
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+      return;
+    }
+
+    if (data.type === "message" && data.agentId && data.text) {
+      try {
+        await sendMessage(data.agentId, data.text, (event) => {
+          ws.send(JSON.stringify({ ...event, agentId: data.agentId }));
+        });
+      } catch (err) {
+        ws.send(
+          JSON.stringify({ type: "error", agentId: data.agentId, message: err.message })
+        );
+      }
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Claude Web UI running on http://0.0.0.0:${PORT}`);
+});
