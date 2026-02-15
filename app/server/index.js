@@ -2,6 +2,7 @@ import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import {
   createAgent,
@@ -50,6 +51,18 @@ app.delete("/api/agents/:id", (req, res) => {
   const deleted = deleteAgent(req.params.id);
   if (!deleted) return res.status(404).json({ error: "Agent not found" });
   res.status(204).end();
+});
+
+app.get("/api/workspace", async (_req, res) => {
+  try {
+    const entries = await fs.promises.readdir("/workspace", { withFileTypes: true });
+    const dirs = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => ({ name: e.name, path: `/workspace/${e.name}` }));
+    res.json(dirs);
+  } catch {
+    res.json([]);
+  }
 });
 
 app.get("/api/agents/:id/history", (req, res) => {

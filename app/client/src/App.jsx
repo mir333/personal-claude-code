@@ -1,13 +1,19 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { Send } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAgents } from "./hooks/useAgents.js";
 import { useWebSocket } from "./hooks/useWebSocket.js";
+import { useWorkspace } from "./hooks/useWorkspace.js";
 
 export default function App() {
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [conversations, setConversations] = useState({});
-  const { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus } = useAgents();
+  const { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir } = useAgents();
+  const { directories, fetchDirectories } = useWorkspace();
   const messagesEndRef = useRef(null);
 
   const handleWsMessage = useCallback(
@@ -53,7 +59,8 @@ export default function App() {
 
   useEffect(() => {
     fetchAgents();
-  }, [fetchAgents]);
+    fetchDirectories();
+  }, [fetchAgents, fetchDirectories]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -79,13 +86,15 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-950 text-gray-100">
+    <div className="flex h-screen bg-background text-foreground">
       <Sidebar
         agents={agents}
         selectedId={selectedAgentId}
         onSelect={setSelectedAgentId}
         onCreate={createAgent}
         onDelete={handleDeleteAgent}
+        directories={directories}
+        findAgentByWorkDir={findAgentByWorkDir}
       />
       <div className="flex-1 flex flex-col">
         {selectedAgentId ? (
@@ -95,14 +104,18 @@ export default function App() {
                 Reconnecting to server...
               </div>
             )}
-            <div className="flex-1 overflow-y-auto p-4">
+            <ScrollArea className="flex-1 p-4">
               {selectedConversation.map((msg, i) => (
                 <div key={i} className="mb-2 text-sm">
                   {msg.type === "user" && (
-                    <div className="max-w-lg bg-blue-600 rounded-lg px-4 py-2 w-fit ml-auto">{msg.text}</div>
+                    <div className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
+                      {msg.text}
+                    </div>
                   )}
                   {msg.type === "assistant_stream" && (
-                    <div className="max-w-2xl bg-gray-800 rounded-lg px-4 py-2 whitespace-pre-wrap">{msg.text}</div>
+                    <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2 whitespace-pre-wrap">
+                      {msg.text}
+                    </div>
                   )}
                   {msg.type === "tool_call" && (
                     <ToolCallCard
@@ -115,17 +128,19 @@ export default function App() {
                   )}
                   {msg.type === "tool_result" && null}
                   {msg.type === "error" && (
-                    <div className="max-w-2xl bg-red-900/50 text-red-300 rounded-lg px-4 py-2">{msg.message}</div>
+                    <div className="max-w-2xl bg-destructive/20 text-destructive rounded-lg px-4 py-2">
+                      {msg.message}
+                    </div>
                   )}
                 </div>
               ))}
               <div ref={messagesEndRef} />
-            </div>
+            </ScrollArea>
             <ChatInput onSend={handleSend} connected={connected} />
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-600">
-            Select or create an agent to start chatting
+          <div className="flex-1 flex items-center justify-center text-muted-foreground">
+            Select a project or create one to start chatting
           </div>
         )}
       </div>
@@ -145,23 +160,22 @@ function ChatInput({ onSend, connected }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="p-4 border-t border-gray-800">
+    <form onSubmit={handleSubmit} className="p-4 border-t border-border">
       <div className="flex gap-2">
-        <input
-          type="text"
+        <Input
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={connected ? "Send a message..." : "Connecting..."}
           disabled={!connected}
-          className="flex-1 px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          className="flex-1"
         />
-        <button
+        <Button
           type="submit"
           disabled={!connected || !text.trim()}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:hover:bg-blue-600 rounded-lg text-sm font-medium"
+          size="icon"
         >
-          Send
-        </button>
+          <Send className="h-4 w-4" />
+        </Button>
       </div>
     </form>
   );

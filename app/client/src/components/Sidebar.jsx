@@ -1,13 +1,26 @@
 import { useState } from "react";
+import { FolderOpen, Plus, Circle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import NewAgentForm from "./NewAgentForm.jsx";
+import { cn } from "@/lib/utils";
 
 const STATUS_COLORS = {
-  idle: "bg-green-500",
-  busy: "bg-yellow-500",
-  error: "bg-red-500",
+  idle: "text-green-500",
+  busy: "text-yellow-500",
+  error: "text-red-500",
 };
 
-export default function Sidebar({ agents, selectedId, onSelect, onCreate, onDelete }) {
+export default function Sidebar({
+  agents,
+  selectedId,
+  onSelect,
+  onCreate,
+  onDelete,
+  directories,
+  findAgentByWorkDir,
+}) {
   const [showForm, setShowForm] = useState(false);
 
   async function handleCreate(name, workingDirectory) {
@@ -15,48 +28,113 @@ export default function Sidebar({ agents, selectedId, onSelect, onCreate, onDele
     setShowForm(false);
   }
 
+  async function handleDirClick(dir) {
+    const existing = findAgentByWorkDir(dir.path);
+    if (existing) {
+      onSelect(existing.id);
+    } else {
+      const agent = await onCreate(dir.name, dir.path);
+      onSelect(agent.id);
+    }
+  }
+
   return (
-    <div className="w-72 border-r border-gray-800 flex flex-col h-full">
-      <div className="p-4 border-b border-gray-800">
-        <h1 className="text-lg font-semibold mb-3">Claude Agents</h1>
+    <div className="w-72 border-r border-border flex flex-col h-full bg-sidebar text-sidebar-foreground">
+      <div className="p-4 pb-3">
+        <h1 className="text-lg font-semibold tracking-tight">Claude Agents</h1>
+      </div>
+      <Separator />
+      <ScrollArea className="flex-1">
+        <div className="p-2">
+          <p className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Workspace
+          </p>
+          {directories.length === 0 && (
+            <p className="px-2 py-3 text-xs text-muted-foreground">No projects found</p>
+          )}
+          {directories.map((dir) => {
+            const agent = findAgentByWorkDir(dir.path);
+            const isSelected = agent && agent.id === selectedId;
+            return (
+              <button
+                key={dir.path}
+                onClick={() => handleDirClick(dir)}
+                className={cn(
+                  "w-full flex items-center gap-2 rounded-md px-2 py-2 text-sm text-left transition-colors cursor-pointer",
+                  isSelected
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "hover:bg-sidebar-accent/50"
+                )}
+              >
+                <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate flex-1">{dir.name}</span>
+                {agent && (
+                  <Circle
+                    className={cn("h-2.5 w-2.5 shrink-0 fill-current", STATUS_COLORS[agent.status] || "text-muted-foreground")}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Agents not linked to a workspace dir */}
+        {agents.filter((a) => !directories.some((d) => d.path === a.workingDirectory)).length > 0 && (
+          <>
+            <Separator className="my-1" />
+            <div className="p-2">
+              <p className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Custom Agents
+              </p>
+              {agents
+                .filter((a) => !directories.some((d) => d.path === a.workingDirectory))
+                .map((agent) => (
+                  <div
+                    key={agent.id}
+                    onClick={() => onSelect(agent.id)}
+                    className={cn(
+                      "w-full flex items-center gap-2 rounded-md px-2 py-2 text-sm text-left transition-colors cursor-pointer group",
+                      selectedId === agent.id
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        : "hover:bg-sidebar-accent/50"
+                    )}
+                  >
+                    <Circle
+                      className={cn("h-2.5 w-2.5 shrink-0 fill-current", STATUS_COLORS[agent.status] || "text-muted-foreground")}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate">{agent.name}</div>
+                      <div className="text-xs text-muted-foreground truncate">{agent.workingDirectory}</div>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirm(`Delete agent "${agent.name}"?`)) onDelete(agent.id);
+                      }}
+                      className="text-muted-foreground hover:text-destructive text-sm shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+            </div>
+          </>
+        )}
+      </ScrollArea>
+      <Separator />
+      <div className="p-3">
         {showForm ? (
           <NewAgentForm onSubmit={handleCreate} onCancel={() => setShowForm(false)} />
         ) : (
-          <button
+          <Button
+            variant="outline"
+            className="w-full"
             onClick={() => setShowForm(true)}
-            className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium"
           >
-            + New Agent
-          </button>
+            <Plus className="h-4 w-4" />
+            New Project
+          </Button>
         )}
-      </div>
-      <div className="flex-1 overflow-y-auto">
-        {agents.map((agent) => (
-          <div
-            key={agent.id}
-            onClick={() => onSelect(agent.id)}
-            className={`flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-800 ${
-              selectedId === agent.id ? "bg-gray-800" : ""
-            }`}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS[agent.status] || "bg-gray-500"}`} />
-              <div className="min-w-0">
-                <div className="text-sm font-medium truncate">{agent.name}</div>
-                <div className="text-xs text-gray-500 truncate">{agent.workingDirectory}</div>
-              </div>
-            </div>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                if (confirm(`Delete agent "${agent.name}"?`)) onDelete(agent.id);
-              }}
-              className="text-gray-600 hover:text-red-400 text-sm shrink-0 ml-2"
-            >
-              ✕
-            </button>
-          </div>
-        ))}
       </div>
     </div>
   );

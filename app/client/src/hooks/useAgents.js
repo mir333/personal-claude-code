@@ -30,5 +30,12 @@ export function useAgents() {
     );
   }, []);
 
-  return { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus };
+  const findAgentByWorkDir = useCallback(
+    (workingDirectory) => {
+      return agents.find((a) => a.workingDirectory === workingDirectory) || null;
+    },
+    [agents]
+  );
+
+  return { agents, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir };
 }
