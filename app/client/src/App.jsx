@@ -4,6 +4,7 @@ import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import Markdown from "./components/Markdown.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
+import SuggestionBar from "./components/SuggestionBar.jsx";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -101,6 +102,64 @@ export default function App() {
       }
     }
     return null;
+  })();
+
+  // Parse numbered options from last assistant message and compute contextual suggestions
+  const { suggestions, options } = (() => {
+    const agent = agents.find((a) => a.id === selectedAgentId);
+    if (!agent || agent.status === "busy") return { suggestions: [], options: [] };
+
+    const conv = selectedConversation;
+    if (conv.length === 0) return { suggestions: [], options: [] };
+
+    const lastEntry = conv[conv.length - 1];
+
+    // Parse numbered options from the last assistant_stream text before a stats/done entry
+    let parsedOptions = [];
+    if (lastEntry.type === "stats") {
+      // Find the last assistant_stream before this stats entry
+      for (let i = conv.length - 2; i >= 0; i--) {
+        if (conv[i].type === "assistant_stream") {
+          const lines = conv[i].text.split("\n");
+          const optionRe = /^\s*(\d+)[.)]\s+\*{0,2}(.+?)\*{0,2}\s*$/;
+          const candidates = [];
+          for (const line of lines) {
+            const m = line.match(optionRe);
+            if (m) {
+              candidates.push({ number: parseInt(m[1], 10), text: m[2] });
+            } else if (candidates.length > 0) {
+              // Break on non-matching line after we started collecting
+              break;
+            }
+          }
+          // Only use if 2+ consecutive numbered items were found
+          if (candidates.length >= 2) parsedOptions = candidates;
+          break;
+        }
+        // Skip tool_call/tool_result entries
+        if (conv[i].type !== "tool_call" && conv[i].type !== "tool_result") break;
+      }
+    }
+
+    // Compute contextual suggestions
+    let sugg = [];
+    if (lastEntry.type === "stats") {
+      sugg = ["Continue", "Summarize changes"];
+    } else if (lastEntry.type === "error") {
+      sugg = ["Try again", "Explain the error"];
+    } else if (lastEntry.type === "context_cleared") {
+      sugg = ["Start fresh"];
+    } else {
+      return { suggestions: [], options: [] };
+    }
+
+    // Check if recent entries include Bash tool calls
+    const recentSlice = conv.slice(-20);
+    if (recentSlice.some((m) => m.type === "tool_call" && m.tool === "Bash")) {
+      if (!sugg.includes("Run tests")) sugg.push("Run tests");
+    }
+
+    return { suggestions: sugg, options: parsedOptions };
   })();
 
   useEffect(() => {
@@ -287,6 +346,7 @@ export default function App() {
               ))}
               <div ref={messagesEndRef} />
             </ScrollArea>
+            <SuggestionBar suggestions={suggestions} options={options} onSelect={handleSend} />
             <ChatInput onSend={handleSend} onClearContext={handleClearContext} connected={connected} />
           </>
         ) : (
