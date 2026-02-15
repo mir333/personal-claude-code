@@ -431,7 +431,7 @@ function ChatInput({ onSend, onClearContext, connected }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="p-4 border-t border-border">
+    <form onSubmit={handleSubmit} className="p-4 border-t border-border bg-background sticky bottom-0 z-10">
       <div className="flex gap-2">
         <Button
           type="button"

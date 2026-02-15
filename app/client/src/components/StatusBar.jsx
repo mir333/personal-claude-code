@@ -87,67 +87,68 @@ export default function StatusBar({ usage, connected, contextInfo, onCompact, cl
         </>
       )}
 
-      <Separator orientation="vertical" className="h-3 shrink-0" />
+      {/* Consumption stats - hidden on mobile */}
+      <Separator orientation="vertical" className="h-3 shrink-0 hidden md:block" />
 
-      <span className="font-medium text-foreground/70 shrink-0">Session</span>
+      <span className="font-medium text-foreground/70 shrink-0 hidden md:inline">Session</span>
 
-      <span className="flex items-center gap-1 shrink-0" title="Requests this session">
+      <span className="items-center gap-1 shrink-0 hidden md:flex" title="Requests this session">
         <Activity className="h-3 w-3" />
         {session.requests}
       </span>
 
-      <span className="flex items-center gap-1 shrink-0" title="Session input tokens">
+      <span className="items-center gap-1 shrink-0 hidden md:flex" title="Session input tokens">
         <ArrowDownToLine className="h-3 w-3" />
         {formatTokens(session.inputTokens)} in
       </span>
 
-      <span className="flex items-center gap-1 shrink-0" title="Session output tokens">
+      <span className="items-center gap-1 shrink-0 hidden md:flex" title="Session output tokens">
         <ArrowUpFromLine className="h-3 w-3" />
         {formatTokens(session.outputTokens)} out
       </span>
 
       {session.cacheReadTokens > 0 && (
-        <span className="flex items-center gap-1 shrink-0" title="Session cache read tokens">
+        <span className="items-center gap-1 shrink-0 hidden md:flex" title="Session cache read tokens">
           <Database className="h-3 w-3" />
           {formatTokens(session.cacheReadTokens)} cached
         </span>
       )}
 
-      <span className="flex items-center gap-1 shrink-0" title="Session cost">
+      <span className="items-center gap-1 shrink-0 hidden md:flex" title="Session cost">
         <Coins className="h-3 w-3" />
         {formatCost(session.totalCost)}
       </span>
 
-      <ModelCosts modelCosts={session.modelCosts} prefix="Session" />
+      <span className="hidden md:contents"><ModelCosts modelCosts={session.modelCosts} prefix="Session" /></span>
 
-      <Separator orientation="vertical" className="h-3 shrink-0" />
+      <Separator orientation="vertical" className="h-3 shrink-0 hidden md:block" />
 
-      <span className="font-medium text-foreground/70 flex items-center gap-1 shrink-0">
+      <span className="font-medium text-foreground/70 items-center gap-1 shrink-0 hidden md:flex">
         <CalendarDays className="h-3 w-3" />
         Week
       </span>
 
-      <span className="flex items-center gap-1 shrink-0" title="Weekly requests (all models)">
+      <span className="items-center gap-1 shrink-0 hidden md:flex" title="Weekly requests (all models)">
         <Activity className="h-3 w-3" />
         {weekly.requests}
       </span>
 
-      <span className="flex items-center gap-1 shrink-0" title="Weekly input tokens (all models)">
+      <span className="items-center gap-1 shrink-0 hidden md:flex" title="Weekly input tokens (all models)">
         <ArrowDownToLine className="h-3 w-3" />
         {formatTokens(weekly.inputTokens)} in
       </span>
 
-      <span className="flex items-center gap-1 shrink-0" title="Weekly output tokens (all models)">
+      <span className="items-center gap-1 shrink-0 hidden md:flex" title="Weekly output tokens (all models)">
         <ArrowUpFromLine className="h-3 w-3" />
         {formatTokens(weekly.outputTokens)} out
       </span>
 
-      <span className="flex items-center gap-1 shrink-0" title="Weekly cost (all models)">
+      <span className="items-center gap-1 shrink-0 hidden md:flex" title="Weekly cost (all models)">
         <Coins className="h-3 w-3" />
         {formatCost(weekly.totalCost)}
       </span>
 
-      <ModelCosts modelCosts={weekly.modelCosts} prefix="Weekly" />
+      <span className="hidden md:contents"><ModelCosts modelCosts={weekly.modelCosts} prefix="Weekly" /></span>
     </div>
   );
 }
