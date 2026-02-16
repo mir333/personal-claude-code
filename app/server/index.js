@@ -15,6 +15,8 @@ import {
   getHistory,
   clearContext,
   sendMessage,
+  setInteractiveQuestions,
+  answerQuestion,
 } from "./agents.js";
 import { getUsageStats } from "./usage.js";
 import {
@@ -201,6 +203,15 @@ app.get("/api/agents/:id/git-status", async (req, res) => {
   res.json({ isRepo: true, branch: branch || "unknown", state, unpushed });
 });
 
+app.patch("/api/agents/:id/settings", (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+  if (req.body.interactiveQuestions !== undefined) {
+    setInteractiveQuestions(req.params.id, req.body.interactiveQuestions);
+  }
+  res.json({ interactiveQuestions: agent.interactiveQuestions });
+});
+
 // SPA fallback (Express 5 requires named wildcard)
 app.get("{*path}", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
@@ -235,6 +246,11 @@ wss.on("connection", (ws) => {
       data = JSON.parse(raw);
     } catch {
       ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+      return;
+    }
+
+    if (data.type === "question_answer" && data.agentId && data.answers) {
+      answerQuestion(data.agentId, data.answers);
       return;
     }
 

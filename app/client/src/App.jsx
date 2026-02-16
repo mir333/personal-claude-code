@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Send, Trash2, Menu, TerminalSquare } from "lucide-react";
+import { Send, Trash2, Menu, TerminalSquare, MessageCircleQuestion } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -24,6 +24,8 @@ export default function App() {
   const [conversations, setConversations] = useState({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [interactiveQuestions, setInteractiveQuestions] = useState({});
+  const [pendingQuestions, setPendingQuestions] = useState({});
   const terminalDataRef = useRef(null);
   const { agents, gitStatuses, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
@@ -40,6 +42,14 @@ export default function App() {
         if (terminalDataRef.current) {
           terminalDataRef.current(msg.data);
         }
+        return;
+      }
+
+      if (type === "question_pending") {
+        setPendingQuestions((prev) => ({
+          ...prev,
+          [agentId]: { input: rest.input, toolUseId: rest.toolUseId },
+        }));
         return;
       }
 
@@ -79,6 +89,7 @@ export default function App() {
           };
         });
         updateAgentStatus(agentId, "idle");
+        setPendingQuestions((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
         refreshUsage();
         fetchGitStatus(agentId);
         const agent = agents.find((a) => a.id === agentId);
@@ -89,6 +100,7 @@ export default function App() {
           return { ...prev, [agentId]: [...conv, { type: "error", message: rest.message }] };
         });
         updateAgentStatus(agentId, "error");
+        setPendingQuestions((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
         notify("Agent error", { body: rest.message });
       }
     },
@@ -133,41 +145,6 @@ export default function App() {
 
   // Parse numbered options from last assistant message and compute contextual suggestions
   const { suggestions, options } = (() => {
-    const agent = agents.find((a) => a.id === selectedAgentId);
-    if (!agent || agent.status === "busy") return { suggestions: [], options: [] };
-
-    const conv = selectedConversation;
-    if (conv.length === 0) return { suggestions: [], options: [] };
-
-    const lastEntry = conv[conv.length - 1];
-
-    // Parse numbered options from the last assistant_stream text before a stats/done entry
-    let parsedOptions = [];
-    if (lastEntry.type === "stats") {
-      // Find the last assistant_stream before this stats entry
-      for (let i = conv.length - 2; i >= 0; i--) {
-        if (conv[i].type === "assistant_stream") {
-          const lines = conv[i].text.split("\n");
-          const optionRe = /^\s*(\d+)[.)]\s+\*{0,2}(.+?)\*{0,2}\s*$/;
-          const candidates = [];
-          for (const line of lines) {
-            const m = line.match(optionRe);
-            if (m) {
-              candidates.push({ number: parseInt(m[1], 10), text: m[2] });
-            } else if (candidates.length > 0) {
-              // Break on non-matching line after we started collecting
-              break;
-            }
-          }
-          // Only use if 2+ consecutive numbered items were found
-          if (candidates.length >= 2) parsedOptions = candidates;
-          break;
-        }
-        // Skip tool_call/tool_result entries
-        if (conv[i].type !== "tool_call" && conv[i].type !== "tool_result") break;
-      }
-    }
-
     // Compute contextual suggestions
     let sugg = [];
     if (lastEntry.type === "stats") {
@@ -186,7 +163,7 @@ export default function App() {
       if (!sugg.includes("Run tests")) sugg.push("Run tests");
     }
 
-    return { suggestions: sugg, options: parsedOptions };
+    return { suggestions: sugg, options: [] };
   })();
 
   useEffect(() => {
@@ -263,6 +240,24 @@ export default function App() {
     });
   }
 
+  async function handleToggleInteractiveQuestions() {
+    if (!selectedAgentId) return;
+    const newValue = !interactiveQuestions[selectedAgentId];
+    setInteractiveQuestions((prev) => ({ ...prev, [selectedAgentId]: newValue }));
+    try {
+      await fetch(`/api/agents/${selectedAgentId}/settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interactiveQuestions: newValue }),
+      });
+    } catch {}
+  }
+
+  function handleAnswerQuestion(agentId, answers) {
+    send({ type: "question_answer", agentId, answers });
+    setPendingQuestions((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
+  }
+
   if (authenticated === null) {
     return <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">Loading...</div>;
   }
@@ -312,15 +307,26 @@ export default function App() {
           </Button>
           <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} onCompact={selectedAgentId ? handleClearContext : null} className="flex-1 border-b-0" />
           {selectedAgentId && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn("shrink-0 mr-2", terminalOpen && "text-primary")}
-              onClick={() => setTerminalOpen((v) => !v)}
-              title="Toggle Claude CLI"
-            >
-              <TerminalSquare className="h-5 w-5" />
-            </Button>
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn("shrink-0", interactiveQuestions[selectedAgentId] && "text-primary")}
+                onClick={handleToggleInteractiveQuestions}
+                title={interactiveQuestions[selectedAgentId] ? "Questions: interactive (click to auto-answer)" : "Questions: auto-answer (click to pause)"}
+              >
+                <MessageCircleQuestion className="h-5 w-5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn("shrink-0 mr-2", terminalOpen && "text-primary")}
+                onClick={() => setTerminalOpen((v) => !v)}
+                title="Toggle Claude CLI"
+              >
+                <TerminalSquare className="h-5 w-5" />
+              </Button>
+            </>
           )}
         </div>
         {selectedAgentId ? (
@@ -346,6 +352,8 @@ export default function App() {
                           output={selectedConversation.find(
                             (m) => m.type === "tool_result" && m.toolUseId === msg.toolUseId
                           )?.output}
+                          interactive={pendingQuestions[selectedAgentId]?.toolUseId === msg.toolUseId}
+                          onAnswer={({ answers }) => handleAnswerQuestion(selectedAgentId, answers)}
                         />
                       ) : msg.type === "tool_call" && (
                         <ToolCallCard

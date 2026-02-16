@@ -17,6 +17,8 @@ export function createAgent(name, workingDirectory) {
     sessionId: null,
     abortController: null,
     textBuffer: "",
+    interactiveQuestions: false,
+    pendingQuestion: null,
   };
   agents.set(id, agent);
   return agent;
@@ -27,11 +29,12 @@ export function getAgent(id) {
 }
 
 export function listAgents() {
-  return Array.from(agents.values()).map(({ id, name, workingDirectory, status }) => ({
+  return Array.from(agents.values()).map(({ id, name, workingDirectory, status, interactiveQuestions }) => ({
     id,
     name,
     workingDirectory,
     status,
+    interactiveQuestions,
   }));
 }
 
@@ -63,6 +66,32 @@ export function clearContext(id) {
   return true;
 }
 
+export function setInteractiveQuestions(id, value) {
+  const agent = agents.get(id);
+  if (!agent) return false;
+  agent.interactiveQuestions = !!value;
+  return true;
+}
+
+export function answerQuestion(id, answers) {
+  const agent = agents.get(id);
+  if (!agent || !agent.pendingQuestion) return false;
+  agent.pendingQuestion.resolve(answers);
+  return true;
+}
+
+function formatUserAnswer(toolInput, answers) {
+  const questions = toolInput?.questions || [];
+  const lines = ["The user was asked and provided their answers directly:"];
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    const answer = answers[String(i)] || "No answer";
+    lines.push(`Q: "${q.question}" -> Selected: "${answer}"`);
+  }
+  lines.push("Proceed based on these user selections.");
+  return lines.join("\n");
+}
+
 export async function sendMessage(id, text, onEvent) {
   const agent = agents.get(id);
   if (!agent) throw new Error("Agent not found");
@@ -85,10 +114,37 @@ export async function sendMessage(id, text, onEvent) {
     const options = {
       cwd: agent.workingDirectory,
       permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
       includePartialMessages: true,
-      abortSignal: abortController.signal,
+      abortController,
       settingSources: ["user", "project"],
     };
+
+    // Add PreToolUse hook for interactive questions
+    if (agent.interactiveQuestions) {
+      options.hooks = {
+        PreToolUse: [{
+          matcher: "AskUserQuestion",
+          hooks: [async (hookInput, toolUseId, { signal }) => {
+            // Send question_pending event to client
+            onEvent({ type: "question_pending", input: hookInput.tool_input, toolUseId });
+
+            // Wait for user's answer via Promise
+            const answer = await new Promise((resolve, reject) => {
+              agent.pendingQuestion = { resolve, reject };
+              signal.addEventListener("abort", () => reject(new Error("Aborted")));
+            });
+            agent.pendingQuestion = null;
+
+            // Block the tool with user's answer in the reason
+            return {
+              decision: "block",
+              reason: formatUserAnswer(hookInput.tool_input, answer),
+            };
+          }],
+        }],
+      };
+    }
 
     if (agent.sessionId) {
       options.resume = agent.sessionId;
@@ -100,6 +156,21 @@ export async function sendMessage(id, text, onEvent) {
       // Capture session ID
       if (message.type === "system" && message.subtype === "init") {
         agent.sessionId = message.session_id;
+      }
+
+      // Ignore non-actionable system messages
+      if (message.type === "system" && (message.subtype === "compact_boundary" || message.subtype === "hook_response" || message.subtype === "status")) {
+        continue;
+      }
+
+      // Ignore auth_status messages
+      if (message.type === "auth_status") {
+        continue;
+      }
+
+      // Ignore tool_progress messages
+      if (message.type === "tool_progress") {
+        continue;
       }
 
       // Stream text deltas
@@ -146,7 +217,14 @@ export async function sendMessage(id, text, onEvent) {
 
       // Final result
       if (message.type === "result") {
-        const resultText = message.result || "";
+        const resultText = message.subtype === "success" ? (message.result || "") : "";
+
+        // Handle error subtypes
+        if (message.subtype !== "success") {
+          const errorMsg = message.errors ? message.errors.join("; ") : `Stopped: ${message.subtype}`;
+          onEvent({ type: "error", message: errorMsg });
+        }
+
         agent.history.push({
           role: "assistant",
           content: resultText,
@@ -192,6 +270,7 @@ export async function sendMessage(id, text, onEvent) {
     }
   } finally {
     agent.abortController = null;
+    agent.pendingQuestion = null;
     if (agent.status === "busy") agent.status = "idle";
   }
 }
