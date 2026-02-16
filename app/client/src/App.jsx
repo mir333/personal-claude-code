@@ -145,6 +145,10 @@ export default function App() {
 
   // Parse numbered options from last assistant message and compute contextual suggestions
   const { suggestions, options } = (() => {
+    const conv = selectedConversation;
+    if (conv.length === 0) return { suggestions: [], options: [] };
+    const lastEntry = conv[conv.length - 1];
+
     // Compute contextual suggestions
     let sugg = [];
     if (lastEntry.type === "stats") {
