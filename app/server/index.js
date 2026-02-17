@@ -213,8 +213,13 @@ app.patch("/api/agents/:id/settings", (req, res) => {
   res.json({ interactiveQuestions: agent.interactiveQuestions });
 });
 
-// Git config endpoints
-const GIT_CREDENTIALS_PATH = "/home/node/.git-credentials";
+// Git config endpoints — files live inside the persisted volume
+const GIT_PERSIST_DIR = "/home/node/.claude/git";
+const GIT_CONFIG_PATH = path.join(GIT_PERSIST_DIR, "gitconfig");
+const GIT_CREDENTIALS_PATH = path.join(GIT_PERSIST_DIR, "git-credentials");
+fs.mkdirSync(GIT_PERSIST_DIR, { recursive: true });
+// Ensure the env var is set for this process and its children (SDK-spawned agents)
+process.env.GIT_CONFIG_GLOBAL = GIT_CONFIG_PATH;
 
 app.get("/api/git-config", async (_req, res) => {
   const [name, email] = await Promise.all([
