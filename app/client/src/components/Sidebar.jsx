@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch } from "lucide-react";
+import { useState, useEffect } from "react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -31,6 +31,98 @@ function GitStatus({ git }) {
   );
 }
 
+function GitSettingsPanel({ onClose }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [token, setToken] = useState("");
+  const [hasToken, setHasToken] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/git-config")
+      .then((r) => r.json())
+      .then((data) => {
+        setName(data.name || "");
+        setEmail(data.email || "");
+        setHasToken(data.hasToken);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/git-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, ...(token ? { token } : {}) }),
+      });
+      const data = await res.json();
+      setHasToken(data.hasToken);
+      setToken("");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Git Settings</p>
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-sm">✕</button>
+      </div>
+      <div className="space-y-2">
+        <div>
+          <label className="text-xs text-muted-foreground">User Name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background"
+            placeholder="Your Name"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground">Email</label>
+          <input
+            type="text"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background"
+            placeholder="you@example.com"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground">GitHub Token</label>
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            className="w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background"
+            placeholder={hasToken ? "Token configured ✓" : "Not set"}
+          />
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={handleSave}
+          disabled={saving}
+        >
+          {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+          {saved ? "Saved!" : "Save"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function Sidebar({
   agents,
   selectedId,
@@ -44,6 +136,15 @@ export default function Sidebar({
   gitStatuses = {},
 }) {
   const [showForm, setShowForm] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [gitConfigured, setGitConfigured] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/git-config")
+      .then((r) => r.json())
+      .then((data) => setGitConfigured(!!data.name && !!data.email && data.hasToken))
+      .catch(() => {});
+  }, [showSettings]);
 
   async function handleCreate(name, workingDirectory) {
     await onCreate(name, workingDirectory);
@@ -64,22 +165,47 @@ export default function Sidebar({
     <div className="w-72 border-r border-border flex flex-col h-full bg-sidebar text-sidebar-foreground">
       <div className="p-4 pb-3 flex items-center justify-between">
         <h1 className="text-lg font-semibold tracking-tight">Claude Agents</h1>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={toggleNotifications}
-          title={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
-        >
-          {notificationsEnabled ? (
-            <BellRing className="h-4 w-4" />
-          ) : (
-            <BellOff className="h-4 w-4 text-muted-foreground" />
-          )}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0 relative"
+            onClick={() => setShowSettings((v) => !v)}
+            title="Git settings"
+          >
+            <Settings className="h-4 w-4" />
+            {gitConfigured !== null && (
+              <span
+                className={cn(
+                  "absolute top-1 right-1 h-2 w-2 rounded-full",
+                  gitConfigured ? "bg-green-500" : "bg-red-500"
+                )}
+              />
+            )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={toggleNotifications}
+            title={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
+          >
+            {notificationsEnabled ? (
+              <BellRing className="h-4 w-4" />
+            ) : (
+              <BellOff className="h-4 w-4 text-muted-foreground" />
+            )}
+          </Button>
+        </div>
       </div>
       <Separator />
       <ScrollArea className="flex-1">
+        {showSettings && (
+          <>
+            <GitSettingsPanel onClose={() => setShowSettings(false)} />
+            <Separator />
+          </>
+        )}
         <div className="p-2">
           <p className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
             Workspace

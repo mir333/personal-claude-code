@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Send, Trash2, Menu, TerminalSquare, MessageCircleQuestion } from "lucide-react";
+import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -7,7 +7,6 @@ import Markdown from "./components/Markdown.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
 import SuggestionBar from "./components/SuggestionBar.jsx";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useAgents } from "./hooks/useAgents.js";
@@ -122,7 +121,7 @@ export default function App() {
     });
   }, []);
 
-  const { send, connected } = useWebSocket(handleWsMessage, handleServerRestart);
+  const { send, connected, reconnect } = useWebSocket(handleWsMessage, handleServerRestart);
   const selectedConversation = conversations[selectedAgentId] || [];
 
   // Derive context window info from the last stats entry after the most recent context_cleared
@@ -216,6 +215,11 @@ export default function App() {
       [selectedAgentId]: [...(prev[selectedAgentId] || []), { type: "user", text }],
     }));
     send({ type: "message", agentId: selectedAgentId, text });
+  }
+
+  function handleStop() {
+    if (!selectedAgentId) return;
+    send({ type: "abort", agentId: selectedAgentId });
   }
 
   async function handleClearContext() {
@@ -407,7 +411,7 @@ export default function App() {
                   <div ref={messagesEndRef} />
                 </ScrollArea>
                 <SuggestionBar suggestions={suggestions} options={options} onSelect={handleSend} />
-                <ChatInput onSend={handleSend} onClearContext={handleClearContext} connected={connected} />
+                <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} />
               </div>
             )}
             {terminalOpen && (
@@ -431,20 +435,80 @@ export default function App() {
   );
 }
 
-function ChatInput({ onSend, onClearContext, connected }) {
+function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isBusy }) {
   const [text, setText] = useState("");
+  const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  function resetHeight() {
+    const ta = textareaRef.current;
+    if (ta) {
+      ta.style.height = "auto";
+      ta.style.height = ta.scrollHeight + "px";
+    }
+  }
+
+  function handleChange(e) {
+    setText(e.target.value);
+    resetHeight();
+  }
 
   function handleSubmit(e) {
-    e.preventDefault();
+    e?.preventDefault();
     if (text.trim()) {
       onSend(text);
       setText("");
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
     }
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }
+
+  function handleFileSelect(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    let pending = files.length;
+    const results = [];
+
+    files.forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        results[idx] = `<file path="${file.name}">\n${reader.result}\n</file>\n`;
+        pending--;
+        if (pending === 0) {
+          const prefix = results.join("\n");
+          setText((prev) => prefix + (prev ? "\n" + prev : ""));
+          // Reset height after state update
+          requestAnimationFrame(() => resetHeight());
+        }
+      };
+      reader.onerror = () => {
+        results[idx] = `<file path="${file.name}">\n[Error: could not read file]\n</file>\n`;
+        pending--;
+        if (pending === 0) {
+          const prefix = results.join("\n");
+          setText((prev) => prefix + (prev ? "\n" + prev : ""));
+          requestAnimationFrame(() => resetHeight());
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    // Reset the input so re-selecting the same file works
+    e.target.value = "";
   }
 
   return (
     <form onSubmit={handleSubmit} className="p-4 border-t border-border bg-background sticky bottom-0 z-10">
-      <div className="flex gap-2">
+      <div className="flex gap-2 items-end">
         <Button
           type="button"
           variant="ghost"
@@ -452,24 +516,71 @@ function ChatInput({ onSend, onClearContext, connected }) {
           onClick={onClearContext}
           disabled={!connected}
           title="Clear context"
-          className="text-muted-foreground hover:text-yellow-500"
+          className="text-muted-foreground hover:text-yellow-500 shrink-0"
         >
           <Trash2 className="h-4 w-4" />
         </Button>
-        <Input
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={!connected}
+          title="Attach files"
+          className="text-muted-foreground hover:text-foreground shrink-0"
+        >
+          <Paperclip className="h-4 w-4" />
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFileSelect}
+        />
+        <textarea
+          ref={textareaRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
           placeholder={connected ? "Send a message..." : "Connecting..."}
           disabled={!connected}
-          className="flex-1"
+          rows={1}
+          className="flex-1 resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          style={{ maxHeight: "25vh" }}
         />
-        <Button
-          type="submit"
-          disabled={!connected || !text.trim()}
-          size="icon"
-        >
-          <Send className="h-4 w-4" />
-        </Button>
+        {!connected ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={onReconnect}
+            title="Reconnect"
+            className="shrink-0 text-yellow-500 border-yellow-500/50 hover:bg-yellow-500/10 hover:text-yellow-400"
+          >
+            <WifiOff className="h-4 w-4" />
+          </Button>
+        ) : isBusy ? (
+          <Button
+            type="button"
+            variant="destructive"
+            size="icon"
+            onClick={onStop}
+            title="Stop agent"
+            className="shrink-0"
+          >
+            <Square className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button
+            type="submit"
+            disabled={!text.trim()}
+            size="icon"
+            className="shrink-0"
+          >
+            <Send className="h-4 w-4" />
+          </Button>
+        )}
       </div>
     </form>
   );

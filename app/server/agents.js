@@ -38,6 +38,13 @@ export function listAgents() {
   }));
 }
 
+export function abortAgent(id) {
+  const agent = agents.get(id);
+  if (!agent || !agent.abortController) return false;
+  agent.abortController.abort();
+  return true;
+}
+
 export function deleteAgent(id) {
   const agent = agents.get(id);
   if (!agent) return false;

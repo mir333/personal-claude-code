@@ -12,6 +12,7 @@ import {
   listAgents,
   getAgent,
   deleteAgent,
+  abortAgent,
   getHistory,
   clearContext,
   sendMessage,
@@ -212,6 +213,64 @@ app.patch("/api/agents/:id/settings", (req, res) => {
   res.json({ interactiveQuestions: agent.interactiveQuestions });
 });
 
+// Git config endpoints
+const GIT_CREDENTIALS_PATH = "/home/node/.git-credentials";
+
+app.get("/api/git-config", async (_req, res) => {
+  const [name, email] = await Promise.all([
+    gitExec(["config", "--global", "--get", "user.name"], "/"),
+    gitExec(["config", "--global", "--get", "user.email"], "/"),
+  ]);
+
+  let hasToken = false;
+  try {
+    const stat = await fs.promises.stat(GIT_CREDENTIALS_PATH);
+    hasToken = stat.size > 0;
+  } catch {
+    // file doesn't exist
+  }
+
+  res.json({ name: name || "", email: email || "", hasToken });
+});
+
+app.post("/api/git-config", async (req, res) => {
+  const { name, email, token } = req.body;
+
+  if (name !== undefined) {
+    await new Promise((resolve) =>
+      execFile("git", ["config", "--global", "user.name", name], resolve)
+    );
+  }
+  if (email !== undefined) {
+    await new Promise((resolve) =>
+      execFile("git", ["config", "--global", "user.email", email], resolve)
+    );
+  }
+  if (token && token.trim()) {
+    await fs.promises.writeFile(
+      GIT_CREDENTIALS_PATH,
+      `https://${token.trim()}@github.com\n`,
+      { mode: 0o600 }
+    );
+  }
+
+  // Return updated state
+  const [updatedName, updatedEmail] = await Promise.all([
+    gitExec(["config", "--global", "--get", "user.name"], "/"),
+    gitExec(["config", "--global", "--get", "user.email"], "/"),
+  ]);
+
+  let hasToken = false;
+  try {
+    const stat = await fs.promises.stat(GIT_CREDENTIALS_PATH);
+    hasToken = stat.size > 0;
+  } catch {
+    // file doesn't exist
+  }
+
+  res.json({ name: updatedName || "", email: updatedEmail || "", hasToken });
+});
+
 // SPA fallback (Express 5 requires named wildcard)
 app.get("{*path}", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
@@ -246,6 +305,11 @@ wss.on("connection", (ws) => {
       data = JSON.parse(raw);
     } catch {
       ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+      return;
+    }
+
+    if (data.type === "abort" && data.agentId) {
+      abortAgent(data.agentId);
       return;
     }
 
