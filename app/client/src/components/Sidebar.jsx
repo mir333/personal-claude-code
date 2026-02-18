@@ -89,6 +89,8 @@ function GitSettingsPanel({ onClose }) {
   }
 
   const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
+  const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
+  const linkClass = "underline hover:text-foreground";
 
   return (
     <div className="p-3 space-y-3">
@@ -112,6 +114,13 @@ function GitSettingsPanel({ onClose }) {
           <label className="text-xs text-muted-foreground">Token (PAT)</label>
           <input type="password" value={githubToken} onChange={(e) => setGithubToken(e.target.value)} className={inputClass}
             placeholder={providers.github?.hasToken ? "Token configured ✓" : "Not set"} />
+          <p className={hintClass}>
+            Generate at{" "}
+            <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
+              github.com/settings/tokens
+            </a>
+            . Select "Classic" token with <b>repo</b> scope.
+          </p>
         </div>
 
         <Separator className="my-2" />
@@ -120,11 +129,19 @@ function GitSettingsPanel({ onClose }) {
           <label className="text-xs text-muted-foreground">Token (PAT)</label>
           <input type="password" value={gitlabToken} onChange={(e) => setGitlabToken(e.target.value)} className={inputClass}
             placeholder={providers.gitlab?.hasToken ? "Token configured ✓" : "Not set"} />
+          <p className={hintClass}>
+            Generate at{" "}
+            <a href="https://gitlab.com/-/user_settings/personal_access_tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
+              GitLab &gt; Settings &gt; Access Tokens
+            </a>
+            . Select scopes: <b>api</b>, <b>read_repository</b>, <b>write_repository</b>.
+          </p>
         </div>
         <div>
           <label className="text-xs text-muted-foreground">URL</label>
           <input type="text" value={gitlabUrl} onChange={(e) => setGitlabUrl(e.target.value)} className={inputClass}
             placeholder="https://gitlab.com" />
+          <p className={hintClass}>Change for self-hosted GitLab instances.</p>
         </div>
 
         <Separator className="my-2" />
@@ -133,11 +150,19 @@ function GitSettingsPanel({ onClose }) {
           <label className="text-xs text-muted-foreground">Token (PAT)</label>
           <input type="password" value={azuredevopsToken} onChange={(e) => setAzuredevopsToken(e.target.value)} className={inputClass}
             placeholder={providers.azuredevops?.hasToken ? "Token configured ✓" : "Not set"} />
+          <p className={hintClass}>
+            Generate at{" "}
+            <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" className={linkClass}>
+              dev.azure.com
+            </a>
+            {" "}&gt; User Settings &gt; Personal Access Tokens. Select scope: <b>Code (Read &amp; Write)</b>.
+          </p>
         </div>
         <div>
           <label className="text-xs text-muted-foreground">Organization</label>
           <input type="text" value={azuredevopsOrg} onChange={(e) => setAzuredevopsOrg(e.target.value)} className={inputClass}
             placeholder="my-org" />
+          <p className={hintClass}>Your Azure DevOps organization name from the URL: dev.azure.com/<b>org-name</b></p>
         </div>
 
         <Button variant="outline" size="sm" className="w-full" onClick={handleSave} disabled={saving}>
