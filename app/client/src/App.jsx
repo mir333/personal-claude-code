@@ -293,8 +293,8 @@ export default function App() {
           agents={agents}
           selectedId={selectedAgentId}
           onSelect={handleSelectAgent}
-          onCreate={async (name, localOnlyOrWorkDir) => { const a = await createAgent(name, localOnlyOrWorkDir); fetchDirectories(); return a; }}
-          onClone={async (repoFullName) => { const a = await cloneRepo(repoFullName); fetchDirectories(); return a; }}
+          onCreate={async (name, localOnlyOrWorkDir, provider) => { const a = await createAgent(name, localOnlyOrWorkDir, provider); fetchDirectories(); return a; }}
+          onClone={async (repoFullName, provider) => { const a = await cloneRepo(repoFullName, provider); fetchDirectories(); return a; }}
           onDelete={handleDeleteAgent}
           directories={directories}
           findAgentByWorkDir={findAgentByWorkDir}

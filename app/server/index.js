@@ -105,30 +105,79 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, "..", "dist")));
 
-// Helper: read GitHub token and owner from stored credentials
-function readGitToken() {
+// --- Provider config helpers ---
+const GIT_PERSIST_DIR = "/home/node/.claude/git";
+const GIT_CONFIG_PATH = path.join(GIT_PERSIST_DIR, "gitconfig");
+const GIT_CREDENTIALS_PATH = path.join(GIT_PERSIST_DIR, "git-credentials");
+const PROVIDERS_PATH = path.join(GIT_PERSIST_DIR, "providers.json");
+fs.mkdirSync(GIT_PERSIST_DIR, { recursive: true });
+process.env.GIT_CONFIG_GLOBAL = GIT_CONFIG_PATH;
+
+function readProviders() {
   try {
-    const content = fs.readFileSync(GIT_CREDENTIALS_PATH, "utf-8");
-    const match = content.match(/https:\/\/([^@]+)@github\.com/);
-    if (match) return match[1];
+    return JSON.parse(fs.readFileSync(PROVIDERS_PATH, "utf-8"));
   } catch {
-    // file doesn't exist
+    return {};
   }
-  return null;
 }
 
-function githubApi(method, apiPath, token, body) {
+function writeProviders(providers) {
+  fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(providers, null, 2), { mode: 0o600 });
+}
+
+function getProviderToken(provider) {
+  const providers = readProviders();
+  return providers[provider]?.token || null;
+}
+
+function getProviderConfig(provider) {
+  const providers = readProviders();
+  return providers[provider] || {};
+}
+
+// Rebuild git-credentials from all configured provider tokens
+function syncGitCredentials() {
+  const providers = readProviders();
+  const lines = [];
+  if (providers.github?.token) {
+    lines.push(`https://${providers.github.token}@github.com`);
+  }
+  if (providers.gitlab?.token) {
+    const host = (providers.gitlab.url || "https://gitlab.com").replace(/^https?:\/\//, "");
+    lines.push(`https://oauth2:${providers.gitlab.token}@${host}`);
+  }
+  if (providers.azuredevops?.token) {
+    lines.push(`https://azuredevops:${providers.azuredevops.token}@dev.azure.com`);
+  }
+  fs.writeFileSync(GIT_CREDENTIALS_PATH, lines.join("\n") + (lines.length ? "\n" : ""), { mode: 0o600 });
+}
+
+// Migrate legacy git-credentials to providers.json on first run
+try {
+  if (!fs.existsSync(PROVIDERS_PATH) && fs.existsSync(GIT_CREDENTIALS_PATH)) {
+    const content = fs.readFileSync(GIT_CREDENTIALS_PATH, "utf-8");
+    const match = content.match(/https:\/\/([^@]+)@github\.com/);
+    if (match) {
+      writeProviders({ github: { token: match[1] } });
+    }
+  }
+} catch {
+  // ignore migration errors
+}
+
+// Generic HTTPS JSON API helper
+function apiRequest(method, hostname, apiPath, headers, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
     const req = https.request(
       {
-        hostname: "api.github.com",
+        hostname,
         path: apiPath,
         method,
         headers: {
-          Authorization: `token ${token}`,
           "User-Agent": "claude-container",
-          Accept: "application/vnd.github.v3+json",
+          Accept: "application/json",
+          ...headers,
           ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}),
         },
       },
@@ -148,6 +197,28 @@ function githubApi(method, apiPath, token, body) {
     if (data) req.write(data);
     req.end();
   });
+}
+
+// Provider-specific API wrappers
+function githubApi(method, apiPath, token, body) {
+  return apiRequest(method, "api.github.com", apiPath, {
+    Authorization: `token ${token}`,
+    Accept: "application/vnd.github.v3+json",
+  }, body);
+}
+
+function gitlabApi(method, apiPath, token, gitlabUrl, body) {
+  const host = (gitlabUrl || "https://gitlab.com").replace(/^https?:\/\//, "");
+  return apiRequest(method, host, apiPath, {
+    "PRIVATE-TOKEN": token,
+  }, body);
+}
+
+function azureDevOpsApi(method, org, apiPath, token, body) {
+  const auth = Buffer.from(`:${token}`).toString("base64");
+  return apiRequest(method, "dev.azure.com", `/${org}${apiPath}`, {
+    Authorization: `Basic ${auth}`,
+  }, body);
 }
 
 function execPromise(cmd, args, opts) {
@@ -174,7 +245,7 @@ async function configureLocalGit(dir) {
 
 // REST API
 app.post("/api/agents", async (req, res) => {
-  const { name, workingDirectory, localOnly } = req.body;
+  const { name, workingDirectory, localOnly, provider } = req.body;
   if (!name) {
     return res.status(400).json({ error: "name is required" });
   }
@@ -207,21 +278,49 @@ app.post("/api/agents", async (req, res) => {
       fs.mkdirSync(projectDir, { recursive: true });
       await execPromise("git", ["init"], { cwd: projectDir });
       await configureLocalGit(projectDir);
+    } else if (provider === "gitlab") {
+      const config = getProviderConfig("gitlab");
+      if (!config.token) {
+        return res.status(400).json({ error: "GitLab token not configured. Set it in Git Settings." });
+      }
+      const gitlabUrl = config.url || "https://gitlab.com";
+
+      // Get GitLab user namespace
+      const userRes = await gitlabApi("GET", "/api/v4/user", config.token, gitlabUrl);
+      if (userRes.status !== 200) {
+        return res.status(400).json({ error: "GitLab token is invalid or expired. Update it in Git Settings." });
+      }
+      const username = userRes.data.username;
+
+      // Create private project
+      const repoRes = await gitlabApi("POST", "/api/v4/projects", config.token, gitlabUrl, {
+        name: slug,
+        visibility: "private",
+      });
+      if (repoRes.status === 400 && repoRes.data.message?.name) {
+        return res.status(409).json({ error: repoRes.data.message.name.join(", ") });
+      }
+      if (repoRes.status !== 201) {
+        return res.status(502).json({ error: `GitLab API error: ${repoRes.data.message || JSON.stringify(repoRes.data.error) || "Unknown error"}` });
+      }
+
+      const host = gitlabUrl.replace(/^https?:\/\//, "");
+      const cloneUrl = `https://oauth2:${config.token}@${host}/${username}/${slug}.git`;
+      await execPromise("git", ["clone", cloneUrl, slug], { cwd: "/workspace", timeout: 30000 });
+      await configureLocalGit(projectDir);
     } else {
-      // GitHub mode: create repo via API, then clone
-      const token = readGitToken();
+      // GitHub mode (default)
+      const token = getProviderToken("github");
       if (!token) {
         return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
       }
 
-      // Get GitHub username
       const userRes = await githubApi("GET", "/user", token);
       if (userRes.status !== 200) {
         return res.status(400).json({ error: "GitHub token is invalid or expired. Update it in Git Settings." });
       }
       const owner = userRes.data.login;
 
-      // Create private repo
       const repoRes = await githubApi("POST", "/user/repos", token, { name: slug, private: true });
       if (repoRes.status === 422) {
         const msg = repoRes.data.errors?.[0]?.message || "Repository name already taken on GitHub";
@@ -231,7 +330,6 @@ app.post("/api/agents", async (req, res) => {
         return res.status(502).json({ error: `GitHub API error: ${repoRes.data.message || "Unknown error"}` });
       }
 
-      // Clone the repo
       const cloneUrl = `https://${token}@github.com/${owner}/${slug}.git`;
       await execPromise("git", ["clone", cloneUrl, slug], { cwd: "/workspace", timeout: 30000 });
       await configureLocalGit(projectDir);
@@ -240,46 +338,76 @@ app.post("/api/agents", async (req, res) => {
     const agent = createAgent(name, projectDir);
     res.status(201).json(agent);
   } catch (err) {
-    // Clean up directory if it was partially created
     try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch {}
     res.status(500).json({ error: err.message || "Failed to create project" });
   }
 });
 
-app.get("/api/github/repos", async (_req, res) => {
-  const token = readGitToken();
-  if (!token) {
-    return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
-  }
+// List repos for a given provider
+app.get("/api/repos/:provider", async (req, res) => {
+  const { provider } = req.params;
   try {
-    // Fetch up to 100 repos, sorted by most recently updated
-    const result = await githubApi("GET", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member", token);
-    if (result.status !== 200) {
-      return res.status(400).json({ error: "GitHub token is invalid or expired. Update it in Git Settings." });
+    if (provider === "github") {
+      const token = getProviderToken("github");
+      if (!token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
+      const result = await githubApi("GET", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member", token);
+      if (result.status !== 200) return res.status(400).json({ error: "GitHub token is invalid or expired. Update it in Git Settings." });
+      return res.json(result.data.map((r) => ({
+        full_name: r.full_name, name: r.name, private: r.private,
+        description: r.description || "", updated_at: r.updated_at, owner: r.owner.login,
+      })));
     }
-    const repos = result.data.map((r) => ({
-      full_name: r.full_name,
-      name: r.name,
-      private: r.private,
-      description: r.description || "",
-      updated_at: r.updated_at,
-      owner: r.owner.login,
-    }));
-    res.json(repos);
+
+    if (provider === "gitlab") {
+      const config = getProviderConfig("gitlab");
+      if (!config.token) return res.status(400).json({ error: "GitLab token not configured. Set it in Git Settings." });
+      const result = await gitlabApi("GET", "/api/v4/projects?membership=true&order_by=updated_at&sort=desc&per_page=100", config.token, config.url);
+      if (result.status !== 200) return res.status(400).json({ error: "GitLab token is invalid or expired. Update it in Git Settings." });
+      return res.json(result.data.map((r) => ({
+        full_name: r.path_with_namespace, name: r.path, private: r.visibility === "private",
+        description: r.description || "", updated_at: r.last_activity_at, owner: r.namespace?.path || "",
+      })));
+    }
+
+    if (provider === "azuredevops") {
+      const config = getProviderConfig("azuredevops");
+      if (!config.token) return res.status(400).json({ error: "Azure DevOps token not configured. Set it in Git Settings." });
+      if (!config.organization) return res.status(400).json({ error: "Azure DevOps organization not configured. Set it in Git Settings." });
+      const result = await azureDevOpsApi("GET", config.organization, "/_apis/git/repositories?api-version=7.0", config.token);
+      if (result.status !== 200) return res.status(400).json({ error: "Azure DevOps token is invalid or expired. Update it in Git Settings." });
+      return res.json((result.data.value || []).map((r) => ({
+        full_name: `${r.project.name}/${r.name}`, name: r.name, private: true,
+        description: "", updated_at: "", owner: r.project.name,
+        project: r.project.name,
+      })));
+    }
+
+    res.status(400).json({ error: `Unknown provider: ${provider}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to fetch repos" });
+  }
+});
+
+// Keep old endpoint for backward compat
+app.get("/api/github/repos", async (req, res) => {
+  const token = getProviderToken("github");
+  if (!token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
+  try {
+    const result = await githubApi("GET", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member", token);
+    if (result.status !== 200) return res.status(400).json({ error: "GitHub token is invalid or expired. Update it in Git Settings." });
+    res.json(result.data.map((r) => ({
+      full_name: r.full_name, name: r.name, private: r.private,
+      description: r.description || "", updated_at: r.updated_at, owner: r.owner.login,
+    })));
   } catch (err) {
     res.status(500).json({ error: err.message || "Failed to fetch repos" });
   }
 });
 
 app.post("/api/agents/clone", async (req, res) => {
-  const { repoFullName } = req.body;
+  const { repoFullName, provider = "github" } = req.body;
   if (!repoFullName) {
     return res.status(400).json({ error: "repoFullName is required (e.g. owner/repo)" });
-  }
-
-  const token = readGitToken();
-  if (!token) {
-    return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
   }
 
   const repoName = repoFullName.split("/").pop();
@@ -290,7 +418,28 @@ app.post("/api/agents/clone", async (req, res) => {
   }
 
   try {
-    const cloneUrl = `https://${token}@github.com/${repoFullName}.git`;
+    let cloneUrl;
+
+    if (provider === "github") {
+      const token = getProviderToken("github");
+      if (!token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
+      cloneUrl = `https://${token}@github.com/${repoFullName}.git`;
+    } else if (provider === "gitlab") {
+      const config = getProviderConfig("gitlab");
+      if (!config.token) return res.status(400).json({ error: "GitLab token not configured. Set it in Git Settings." });
+      const host = (config.url || "https://gitlab.com").replace(/^https?:\/\//, "");
+      cloneUrl = `https://oauth2:${config.token}@${host}/${repoFullName}.git`;
+    } else if (provider === "azuredevops") {
+      const config = getProviderConfig("azuredevops");
+      if (!config.token) return res.status(400).json({ error: "Azure DevOps token not configured. Set it in Git Settings." });
+      if (!config.organization) return res.status(400).json({ error: "Azure DevOps organization not configured. Set it in Git Settings." });
+      // repoFullName is "project/repo"
+      const [project, repo] = repoFullName.split("/");
+      cloneUrl = `https://azuredevops:${config.token}@dev.azure.com/${config.organization}/${project}/_git/${repo}`;
+    } else {
+      return res.status(400).json({ error: `Unknown provider: ${provider}` });
+    }
+
     await execPromise("git", ["clone", cloneUrl, repoName], { cwd: "/workspace", timeout: 60000 });
     await configureLocalGit(projectDir);
     const agent = createAgent(repoName, projectDir);
@@ -394,33 +543,32 @@ app.patch("/api/agents/:id/settings", (req, res) => {
   res.json({ interactiveQuestions: agent.interactiveQuestions });
 });
 
-// Git config endpoints — files live inside the persisted volume
-const GIT_PERSIST_DIR = "/home/node/.claude/git";
-const GIT_CONFIG_PATH = path.join(GIT_PERSIST_DIR, "gitconfig");
-const GIT_CREDENTIALS_PATH = path.join(GIT_PERSIST_DIR, "git-credentials");
-fs.mkdirSync(GIT_PERSIST_DIR, { recursive: true });
-// Ensure the env var is set for this process and its children (SDK-spawned agents)
-process.env.GIT_CONFIG_GLOBAL = GIT_CONFIG_PATH;
-
+// Git config endpoints
 app.get("/api/git-config", async (_req, res) => {
   const [name, email] = await Promise.all([
     gitExec(["config", "--global", "--get", "user.name"], "/"),
     gitExec(["config", "--global", "--get", "user.email"], "/"),
   ]);
 
-  let hasToken = false;
-  try {
-    const stat = await fs.promises.stat(GIT_CREDENTIALS_PATH);
-    hasToken = stat.size > 0;
-  } catch {
-    // file doesn't exist
-  }
+  const providers = readProviders();
+  const gh = providers.github || {};
+  const gl = providers.gitlab || {};
+  const az = providers.azuredevops || {};
 
-  res.json({ name: name || "", email: email || "", hasToken });
+  res.json({
+    name: name || "",
+    email: email || "",
+    hasToken: !!(gh.token || gl.token || az.token), // backward compat
+    providers: {
+      github: { hasToken: !!gh.token },
+      gitlab: { hasToken: !!gl.token, url: gl.url || "https://gitlab.com" },
+      azuredevops: { hasToken: !!az.token, organization: az.organization || "" },
+    },
+  });
 });
 
 app.post("/api/git-config", async (req, res) => {
-  const { name, email, token } = req.body;
+  const { name, email, token, githubToken, gitlabToken, gitlabUrl, azuredevopsToken, azuredevopsOrg } = req.body;
 
   if (name !== undefined) {
     await new Promise((resolve) =>
@@ -432,13 +580,30 @@ app.post("/api/git-config", async (req, res) => {
       execFile("git", ["config", "--global", "user.email", email], resolve)
     );
   }
-  if (token && token.trim()) {
-    await fs.promises.writeFile(
-      GIT_CREDENTIALS_PATH,
-      `https://${token.trim()}@github.com\n`,
-      { mode: 0o600 }
-    );
+
+  // Update provider tokens
+  const providers = readProviders();
+
+  // Backward compat: `token` maps to GitHub
+  const ghToken = githubToken || token;
+  if (ghToken && ghToken.trim()) {
+    providers.github = { ...providers.github, token: ghToken.trim() };
   }
+  if (gitlabToken && gitlabToken.trim()) {
+    providers.gitlab = { ...providers.gitlab, token: gitlabToken.trim() };
+  }
+  if (gitlabUrl !== undefined) {
+    providers.gitlab = { ...providers.gitlab, url: gitlabUrl.trim() || "https://gitlab.com" };
+  }
+  if (azuredevopsToken && azuredevopsToken.trim()) {
+    providers.azuredevops = { ...providers.azuredevops, token: azuredevopsToken.trim() };
+  }
+  if (azuredevopsOrg !== undefined) {
+    providers.azuredevops = { ...providers.azuredevops, organization: azuredevopsOrg.trim() };
+  }
+
+  writeProviders(providers);
+  syncGitCredentials();
 
   // Return updated state
   const [updatedName, updatedEmail] = await Promise.all([
@@ -446,15 +611,20 @@ app.post("/api/git-config", async (req, res) => {
     gitExec(["config", "--global", "--get", "user.email"], "/"),
   ]);
 
-  let hasToken = false;
-  try {
-    const stat = await fs.promises.stat(GIT_CREDENTIALS_PATH);
-    hasToken = stat.size > 0;
-  } catch {
-    // file doesn't exist
-  }
+  const gh = providers.github || {};
+  const gl = providers.gitlab || {};
+  const az = providers.azuredevops || {};
 
-  res.json({ name: updatedName || "", email: updatedEmail || "", hasToken });
+  res.json({
+    name: updatedName || "",
+    email: updatedEmail || "",
+    hasToken: !!(gh.token || gl.token || az.token),
+    providers: {
+      github: { hasToken: !!gh.token },
+      gitlab: { hasToken: !!gl.token, url: gl.url || "https://gitlab.com" },
+      azuredevops: { hasToken: !!az.token, organization: az.organization || "" },
+    },
+  });
 });
 
 // SPA fallback (Express 5 requires named wildcard)

@@ -35,8 +35,12 @@ function GitStatus({ git }) {
 function GitSettingsPanel({ onClose }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [token, setToken] = useState("");
-  const [hasToken, setHasToken] = useState(false);
+  const [githubToken, setGithubToken] = useState("");
+  const [gitlabToken, setGitlabToken] = useState("");
+  const [gitlabUrl, setGitlabUrl] = useState("https://gitlab.com");
+  const [azuredevopsToken, setAzuredevopsToken] = useState("");
+  const [azuredevopsOrg, setAzuredevopsOrg] = useState("");
+  const [providers, setProviders] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -46,7 +50,10 @@ function GitSettingsPanel({ onClose }) {
       .then((data) => {
         setName(data.name || "");
         setEmail(data.email || "");
-        setHasToken(data.hasToken);
+        const p = data.providers || {};
+        setProviders(p);
+        setGitlabUrl(p.gitlab?.url || "https://gitlab.com");
+        setAzuredevopsOrg(p.azuredevops?.organization || "");
       })
       .catch(() => {});
   }, []);
@@ -55,14 +62,23 @@ function GitSettingsPanel({ onClose }) {
     setSaving(true);
     setSaved(false);
     try {
+      const body = { name, email };
+      if (githubToken) body.githubToken = githubToken;
+      if (gitlabToken) body.gitlabToken = gitlabToken;
+      body.gitlabUrl = gitlabUrl;
+      if (azuredevopsToken) body.azuredevopsToken = azuredevopsToken;
+      body.azuredevopsOrg = azuredevopsOrg;
+
       const res = await fetch("/api/git-config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, ...(token ? { token } : {}) }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
-      setHasToken(data.hasToken);
-      setToken("");
+      setProviders(data.providers || {});
+      setGithubToken("");
+      setGitlabToken("");
+      setAzuredevopsToken("");
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -71,6 +87,8 @@ function GitSettingsPanel({ onClose }) {
       setSaving(false);
     }
   }
+
+  const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
 
   return (
     <div className="p-3 space-y-3">
@@ -81,41 +99,48 @@ function GitSettingsPanel({ onClose }) {
       <div className="space-y-2">
         <div>
           <label className="text-xs text-muted-foreground">User Name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background"
-            placeholder="Your Name"
-          />
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} placeholder="Your Name" />
         </div>
         <div>
           <label className="text-xs text-muted-foreground">Email</label>
-          <input
-            type="text"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background"
-            placeholder="you@example.com"
-          />
+          <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} placeholder="you@example.com" />
+        </div>
+
+        <Separator className="my-2" />
+        <p className="text-xs font-semibold text-muted-foreground">GitHub</p>
+        <div>
+          <label className="text-xs text-muted-foreground">Token (PAT)</label>
+          <input type="password" value={githubToken} onChange={(e) => setGithubToken(e.target.value)} className={inputClass}
+            placeholder={providers.github?.hasToken ? "Token configured ✓" : "Not set"} />
+        </div>
+
+        <Separator className="my-2" />
+        <p className="text-xs font-semibold text-muted-foreground">GitLab</p>
+        <div>
+          <label className="text-xs text-muted-foreground">Token (PAT)</label>
+          <input type="password" value={gitlabToken} onChange={(e) => setGitlabToken(e.target.value)} className={inputClass}
+            placeholder={providers.gitlab?.hasToken ? "Token configured ✓" : "Not set"} />
         </div>
         <div>
-          <label className="text-xs text-muted-foreground">GitHub Token</label>
-          <input
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            className="w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background"
-            placeholder={hasToken ? "Token configured ✓" : "Not set"}
-          />
+          <label className="text-xs text-muted-foreground">URL</label>
+          <input type="text" value={gitlabUrl} onChange={(e) => setGitlabUrl(e.target.value)} className={inputClass}
+            placeholder="https://gitlab.com" />
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full"
-          onClick={handleSave}
-          disabled={saving}
-        >
+
+        <Separator className="my-2" />
+        <p className="text-xs font-semibold text-muted-foreground">Azure DevOps</p>
+        <div>
+          <label className="text-xs text-muted-foreground">Token (PAT)</label>
+          <input type="password" value={azuredevopsToken} onChange={(e) => setAzuredevopsToken(e.target.value)} className={inputClass}
+            placeholder={providers.azuredevops?.hasToken ? "Token configured ✓" : "Not set"} />
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground">Organization</label>
+          <input type="text" value={azuredevopsOrg} onChange={(e) => setAzuredevopsOrg(e.target.value)} className={inputClass}
+            placeholder="my-org" />
+        </div>
+
+        <Button variant="outline" size="sm" className="w-full" onClick={handleSave} disabled={saving}>
           {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
           {saved ? "Saved!" : "Save"}
         </Button>
@@ -145,12 +170,16 @@ export default function Sidebar({
   useEffect(() => {
     fetch("/api/git-config")
       .then((r) => r.json())
-      .then((data) => setGitConfigured(!!data.name && !!data.email && data.hasToken))
+      .then((data) => {
+        const p = data.providers || {};
+        const anyToken = p.github?.hasToken || p.gitlab?.hasToken || p.azuredevops?.hasToken || data.hasToken;
+        setGitConfigured(!!data.name && !!data.email && anyToken);
+      })
       .catch(() => {});
   }, [showSettings]);
 
-  async function handleCreate(name, localOnly) {
-    await onCreate(name, localOnly);
+  async function handleCreate(name, localOnly, provider) {
+    await onCreate(name, localOnly, provider);
     setShowForm(false);
   }
 
@@ -295,8 +324,8 @@ export default function Sidebar({
           <NewAgentForm onSubmit={handleCreate} onCancel={() => setShowForm(false)} />
         ) : showClone ? (
           <GitHubClonePanel
-            onClone={async (repoFullName) => {
-              const agent = await onClone(repoFullName);
+            onClone={async (repoFullName, provider) => {
+              const agent = await onClone(repoFullName, provider);
               setShowClone(false);
               onSelect(agent.id);
             }}
@@ -318,7 +347,7 @@ export default function Sidebar({
               onClick={() => setShowClone(true)}
             >
               <Download className="h-4 w-4" />
-              Clone from GitHub
+              Clone Repository
             </Button>
           </div>
         )}

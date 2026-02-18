@@ -17,7 +17,7 @@ export function useAgents() {
     }
   }, []);
 
-  const createAgent = useCallback(async (name, localOnlyOrWorkDir) => {
+  const createAgent = useCallback(async (name, localOnlyOrWorkDir, provider) => {
     let body;
     if (typeof localOnlyOrWorkDir === "string" && localOnlyOrWorkDir.startsWith("/workspace/")) {
       // Existing directory click
@@ -25,6 +25,7 @@ export function useAgents() {
     } else {
       // New project form
       body = { name, localOnly: !!localOnlyOrWorkDir };
+      if (provider) body.provider = provider;
     }
     const res = await fetch("/api/agents", {
       method: "POST",
@@ -39,11 +40,11 @@ export function useAgents() {
     return data;
   }, []);
 
-  const cloneRepo = useCallback(async (repoFullName) => {
+  const cloneRepo = useCallback(async (repoFullName, provider = "github") => {
     const res = await fetch("/api/agents/clone", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repoFullName }),
+      body: JSON.stringify({ repoFullName, provider }),
     });
     const data = await res.json();
     if (!res.ok) {

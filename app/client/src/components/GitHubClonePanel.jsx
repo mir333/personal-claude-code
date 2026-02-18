@@ -4,18 +4,29 @@ import { Input } from "@/components/ui/input";
 import { Loader2, Lock, Globe, ArrowLeft, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+const PROVIDERS = [
+  { id: "github", label: "GitHub" },
+  { id: "gitlab", label: "GitLab" },
+  { id: "azuredevops", label: "Azure DevOps" },
+];
+
 export default function GitHubClonePanel({ onClone, onCancel }) {
+  const [provider, setProvider] = useState("github");
   const [repos, setRepos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
-  const [cloning, setCloning] = useState(null); // full_name of repo being cloned
+  const [cloning, setCloning] = useState(null);
   const [cloneError, setCloneError] = useState("");
 
   useEffect(() => {
     setLoading(true);
     setError("");
-    fetch("/api/github/repos")
+    setRepos([]);
+    setFilter("");
+    setCloneError("");
+    setCloning(null);
+    fetch(`/api/repos/${provider}`)
       .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
       .then(({ ok, data }) => {
         if (!ok) {
@@ -26,7 +37,7 @@ export default function GitHubClonePanel({ onClone, onCancel }) {
       })
       .catch(() => setError("Failed to connect to server"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [provider]);
 
   const filtered = repos.filter((r) =>
     r.full_name.toLowerCase().includes(filter.toLowerCase()) ||
@@ -37,7 +48,7 @@ export default function GitHubClonePanel({ onClone, onCancel }) {
     setCloning(repo.full_name);
     setCloneError("");
     try {
-      await onClone(repo.full_name);
+      await onClone(repo.full_name, provider);
     } catch (err) {
       setCloneError(err.message || "Failed to clone");
       setCloning(null);
@@ -55,8 +66,27 @@ export default function GitHubClonePanel({ onClone, onCancel }) {
           <ArrowLeft className="h-4 w-4" />
         </button>
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-          Clone from GitHub
+          Clone Repository
         </p>
+      </div>
+
+      {/* Provider tabs */}
+      <div className="flex rounded-md border border-border overflow-hidden">
+        {PROVIDERS.map((p) => (
+          <button
+            key={p.id}
+            onClick={() => setProvider(p.id)}
+            disabled={!!cloning}
+            className={cn(
+              "flex-1 text-xs py-1.5 transition-colors",
+              provider === p.id
+                ? "bg-primary text-primary-foreground font-medium"
+                : "bg-background text-muted-foreground hover:bg-muted"
+            )}
+          >
+            {p.label}
+          </button>
+        ))}
       </div>
 
       {loading && (
@@ -66,7 +96,7 @@ export default function GitHubClonePanel({ onClone, onCancel }) {
         </div>
       )}
 
-      {error && (
+      {error && !loading && (
         <div className="space-y-2">
           <p className="text-destructive text-xs px-1">{error}</p>
           <Button variant="ghost" size="sm" className="w-full" onClick={onCancel}>

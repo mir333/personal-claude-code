@@ -7,9 +7,15 @@ function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
+const MODES = [
+  { id: "local", label: "Local only" },
+  { id: "github", label: "GitHub" },
+  { id: "gitlab", label: "GitLab" },
+];
+
 export default function NewAgentForm({ onSubmit, onCancel }) {
   const [name, setName] = useState("");
-  const [localOnly, setLocalOnly] = useState(false);
+  const [mode, setMode] = useState("github");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -21,7 +27,11 @@ export default function NewAgentForm({ onSubmit, onCancel }) {
     setError("");
     setSubmitting(true);
     try {
-      await onSubmit(name.trim(), localOnly);
+      if (mode === "local") {
+        await onSubmit(name.trim(), true);
+      } else {
+        await onSubmit(name.trim(), false, mode);
+      }
     } catch (err) {
       setError(err.message || "Failed to create project");
     } finally {
@@ -42,15 +52,22 @@ export default function NewAgentForm({ onSubmit, onCancel }) {
           Will create /workspace/{slug}
         </p>
       )}
-      <label className="flex items-center gap-2 px-1 text-sm cursor-pointer">
-        <input
-          type="checkbox"
-          checked={localOnly}
-          onChange={(e) => setLocalOnly(e.target.checked)}
-          className="rounded"
-        />
-        <span className="text-muted-foreground">Local only (no GitHub repo)</span>
-      </label>
+      <div className="flex rounded-md border border-border overflow-hidden">
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => setMode(m.id)}
+            className={`flex-1 text-xs py-1.5 transition-colors ${
+              mode === m.id
+                ? "bg-primary text-primary-foreground font-medium"
+                : "bg-background text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
       {error && <p className="text-destructive text-xs px-1">{error}</p>}
       <div className="flex gap-2">
         <Button type="submit" size="sm" className="flex-1" disabled={!name.trim() || !slug || submitting}>
