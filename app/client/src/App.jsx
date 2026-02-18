@@ -143,21 +143,34 @@ export default function App() {
   })();
 
   // Parse numbered options from last assistant message and compute contextual suggestions
-  const { suggestions, options } = (() => {
+  const gitStatus = selectedAgentId ? gitStatuses[selectedAgentId] : null;
+  const hasPR = !!(gitStatus?.pr);
+  const prLabel = gitStatus?.pr?.provider === "gitlab" ? "MR" : "PR";
+
+  const { suggestions, options, actions } = (() => {
     const conv = selectedConversation;
-    if (conv.length === 0) return { suggestions: [], options: [] };
+    if (conv.length === 0) return { suggestions: [], options: [], actions: [] };
     const lastEntry = conv[conv.length - 1];
 
     // Compute contextual suggestions
     let sugg = [];
+    let acts = [];
     if (lastEntry.type === "stats") {
       sugg = ["Continue", "Summarize changes", "Commit changes", "Push code"];
+      if (hasPR) {
+        sugg.push(`Review ${prLabel}`);
+        // Check if the last assistant response looks like a review
+        const lastAssistant = [...conv].reverse().find((m) => m.type === "assistant_stream");
+        if (lastAssistant && lastAssistant.text.length > 100) {
+          acts.push({ label: `Post review to ${prLabel}`, action: "post-pr-review" });
+        }
+      }
     } else if (lastEntry.type === "error") {
       sugg = ["Try again", "Explain the error"];
     } else if (lastEntry.type === "context_cleared") {
       sugg = ["Start fresh"];
     } else {
-      return { suggestions: [], options: [] };
+      return { suggestions: [], options: [], actions: [] };
     }
 
     // Check if recent entries include Bash tool calls
@@ -166,7 +179,7 @@ export default function App() {
       if (!sugg.includes("Run tests")) sugg.push("Run tests");
     }
 
-    return { suggestions: sugg, options: [] };
+    return { suggestions: sugg, options: [], actions: acts };
   })();
 
   useEffect(() => {
@@ -264,6 +277,46 @@ export default function App() {
   function handleAnswerQuestion(agentId, answers) {
     send({ type: "question_answer", agentId, answers });
     setPendingQuestions((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
+  }
+
+  async function handlePostReview() {
+    if (!selectedAgentId) return;
+    // Find the last assistant message to use as review body
+    const conv = selectedConversation;
+    const lastAssistant = [...conv].reverse().find((m) => m.type === "assistant_stream");
+    if (!lastAssistant) return;
+
+    try {
+      const res = await fetch(`/api/agents/${selectedAgentId}/pr-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: lastAssistant.text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      const providerLabel = data.provider === "gitlab" ? "MR" : "PR";
+      setConversations((prev) => ({
+        ...prev,
+        [selectedAgentId]: [...(prev[selectedAgentId] || []), {
+          type: "assistant_stream",
+          text: `Review posted to ${providerLabel}. [View ${providerLabel}](${data.url})`,
+        }],
+      }));
+    } catch (err) {
+      setConversations((prev) => ({
+        ...prev,
+        [selectedAgentId]: [...(prev[selectedAgentId] || []), {
+          type: "error",
+          message: `Failed to post review: ${err.message}`,
+        }],
+      }));
+    }
+  }
+
+  function handleSuggestionAction(action) {
+    if (action === "post-pr-review") {
+      handlePostReview();
+    }
   }
 
   if (authenticated === null) {
@@ -411,7 +464,7 @@ export default function App() {
                   ))}
                   <div ref={messagesEndRef} />
                 </ScrollArea>
-                <SuggestionBar suggestions={suggestions} options={options} onSelect={handleSend} />
+                <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
                 <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} />
               </div>
             )}

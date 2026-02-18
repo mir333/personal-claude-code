@@ -505,6 +505,133 @@ function gitExec(args, cwd) {
   });
 }
 
+// Parse git remote URL to detect provider + owner/repo
+function parseRemoteUrl(remoteUrl) {
+  let m;
+  // GitHub (https or ssh, with or without token)
+  m = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+  if (m) return { provider: "github", owner: m[1], repo: m[2] };
+  // Azure DevOps
+  m = remoteUrl.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/.]+)/);
+  if (m) return { provider: "azuredevops", org: m[1], project: m[2], repo: m[3] };
+  // GitLab (check configured URL first, then gitlab.com)
+  const glConfig = getProviderConfig("gitlab");
+  const glHost = (glConfig.url || "https://gitlab.com").replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const glRe = new RegExp(glHost.replace(/\./g, "\\.") + "[:/]([^/]+)/([^/.]+)");
+  m = remoteUrl.match(glRe);
+  if (m) return { provider: "gitlab", owner: m[1], repo: m[2], host: glHost };
+  // Fallback gitlab.com
+  m = remoteUrl.match(/gitlab\.com[:/]([^/]+)\/([^/.]+)/);
+  if (m) return { provider: "gitlab", owner: m[1], repo: m[2], host: "gitlab.com" };
+  return null;
+}
+
+async function fetchPrInfo(remote, branch) {
+  if (remote.provider === "github") {
+    const token = getProviderToken("github");
+    if (!token) return null;
+    const result = await githubApi("GET", `/repos/${remote.owner}/${remote.repo}/pulls?state=open&head=${remote.owner}:${branch}`, token);
+    if (result.status === 200 && result.data.length > 0) {
+      const pr = result.data[0];
+      return { provider: "github", number: pr.number, title: pr.title, url: pr.html_url, owner: remote.owner, repo: remote.repo };
+    }
+  } else if (remote.provider === "gitlab") {
+    const config = getProviderConfig("gitlab");
+    if (!config.token) return null;
+    const projectPath = encodeURIComponent(`${remote.owner}/${remote.repo}`);
+    const result = await gitlabApi("GET", `/api/v4/projects/${projectPath}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`, config.token, config.url);
+    if (result.status === 200 && result.data.length > 0) {
+      const mr = result.data[0];
+      return { provider: "gitlab", number: mr.iid, title: mr.title, url: mr.web_url, projectPath };
+    }
+  } else if (remote.provider === "azuredevops") {
+    const config = getProviderConfig("azuredevops");
+    if (!config.token || !config.organization) return null;
+    const result = await azureDevOpsApi("GET", config.organization,
+      `/${remote.project}/_apis/git/repositories/${remote.repo}/pullrequests?searchCriteria.sourceRefName=refs/heads/${encodeURIComponent(branch)}&searchCriteria.status=active&api-version=7.0`,
+      config.token);
+    if (result.status === 200 && result.data.value?.length > 0) {
+      const pr = result.data.value[0];
+      return {
+        provider: "azuredevops", number: pr.pullRequestId, title: pr.title,
+        url: `https://dev.azure.com/${config.organization}/${remote.project}/_git/${remote.repo}/pullrequest/${pr.pullRequestId}`,
+        org: config.organization, project: remote.project, repo: remote.repo,
+      };
+    }
+  }
+  return null;
+}
+
+app.post("/api/agents/:id/pr-review", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const { body: reviewBody } = req.body;
+  if (!reviewBody || !reviewBody.trim()) {
+    return res.status(400).json({ error: "Review body is required" });
+  }
+
+  const cwd = agent.workingDirectory;
+  const branch = await gitExec(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+  const remoteUrl = await gitExec(["remote", "get-url", "origin"], cwd);
+  if (!branch || !remoteUrl) {
+    return res.status(400).json({ error: "Could not detect branch or remote" });
+  }
+
+  const remote = parseRemoteUrl(remoteUrl);
+  if (!remote) {
+    return res.status(400).json({ error: "Could not detect git provider from remote URL" });
+  }
+
+  try {
+    const prInfo = await fetchPrInfo(remote, branch);
+    if (!prInfo) {
+      return res.status(404).json({ error: `No open PR/MR found for branch "${branch}"` });
+    }
+
+    if (prInfo.provider === "github") {
+      const token = getProviderToken("github");
+      const result = await githubApi("POST", `/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}/reviews`, token, {
+        body: reviewBody.trim(),
+        event: "COMMENT",
+      });
+      if (result.status !== 200) {
+        return res.status(502).json({ error: `GitHub API error: ${result.data.message || "Unknown error"}` });
+      }
+      return res.json({ ok: true, url: result.data.html_url || prInfo.url, provider: "github" });
+    }
+
+    if (prInfo.provider === "gitlab") {
+      const config = getProviderConfig("gitlab");
+      const result = await gitlabApi("POST", `/api/v4/projects/${prInfo.projectPath}/merge_requests/${prInfo.number}/notes`, config.token, config.url, {
+        body: reviewBody.trim(),
+      });
+      if (result.status !== 201) {
+        return res.status(502).json({ error: `GitLab API error: ${result.data.message || JSON.stringify(result.data.error) || "Unknown error"}` });
+      }
+      return res.json({ ok: true, url: prInfo.url, provider: "gitlab" });
+    }
+
+    if (prInfo.provider === "azuredevops") {
+      const config = getProviderConfig("azuredevops");
+      const result = await azureDevOpsApi("POST", config.organization,
+        `/${prInfo.project}/_apis/git/repositories/${prInfo.repo}/pullrequests/${prInfo.number}/threads?api-version=7.0`,
+        config.token, {
+          comments: [{ parentCommentId: 0, content: reviewBody.trim(), commentType: 1 }],
+          status: 1,
+        });
+      if (result.status !== 200 && result.status !== 201) {
+        return res.status(502).json({ error: `Azure DevOps API error: ${result.data.message || "Unknown error"}` });
+      }
+      return res.json({ ok: true, url: prInfo.url, provider: "azuredevops" });
+    }
+
+    res.status(400).json({ error: `Unsupported provider: ${prInfo.provider}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to post review" });
+  }
+});
+
 app.get("/api/agents/:id/git-status", async (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
@@ -531,7 +658,21 @@ app.get("/api/agents/:id/git-status", async (req, res) => {
   if (dirty) state = "dirty";
   else if (unpushed > 0) state = "ahead";
 
-  res.json({ isRepo: true, branch: branch || "unknown", state, unpushed });
+  // Also detect open PR/MR info
+  let pr = null;
+  if (branch && branch !== "HEAD" && branch !== "main" && branch !== "master") {
+    const remoteUrl = await gitExec(["remote", "get-url", "origin"], cwd);
+    if (remoteUrl) {
+      const remote = parseRemoteUrl(remoteUrl);
+      if (remote) {
+        try {
+          pr = await fetchPrInfo(remote, branch);
+        } catch {}
+      }
+    }
+  }
+
+  res.json({ isRepo: true, branch: branch || "unknown", state, unpushed, pr });
 });
 
 app.patch("/api/agents/:id/settings", (req, res) => {
