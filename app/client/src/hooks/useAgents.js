@@ -17,15 +17,40 @@ export function useAgents() {
     }
   }, []);
 
-  const createAgent = useCallback(async (name, workingDirectory) => {
+  const createAgent = useCallback(async (name, localOnlyOrWorkDir) => {
+    let body;
+    if (typeof localOnlyOrWorkDir === "string" && localOnlyOrWorkDir.startsWith("/workspace/")) {
+      // Existing directory click
+      body = { name, workingDirectory: localOnlyOrWorkDir };
+    } else {
+      // New project form
+      body = { name, localOnly: !!localOnlyOrWorkDir };
+    }
     const res = await fetch("/api/agents", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, workingDirectory }),
+      body: JSON.stringify(body),
     });
-    const agent = await res.json();
-    setAgents((prev) => [...prev, agent]);
-    return agent;
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to create agent");
+    }
+    setAgents((prev) => [...prev, data]);
+    return data;
+  }, []);
+
+  const cloneRepo = useCallback(async (repoFullName) => {
+    const res = await fetch("/api/agents/clone", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repoFullName }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to clone repository");
+    }
+    setAgents((prev) => [...prev, data]);
+    return data;
   }, []);
 
   const removeAgent = useCallback(async (id) => {
@@ -62,5 +87,5 @@ export function useAgents() {
     await Promise.all(current.map((a) => fetchGitStatus(a.id)));
   }, [agents, fetchGitStatus]);
 
-  return { agents, gitStatuses, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses };
+  return { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses };
 }

@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2 } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import NewAgentForm from "./NewAgentForm.jsx";
+import GitHubClonePanel from "./GitHubClonePanel.jsx";
 import { cn } from "@/lib/utils";
 
 const STATUS_COLORS = {
@@ -128,6 +129,7 @@ export default function Sidebar({
   selectedId,
   onSelect,
   onCreate,
+  onClone,
   onDelete,
   directories,
   findAgentByWorkDir,
@@ -136,6 +138,7 @@ export default function Sidebar({
   gitStatuses = {},
 }) {
   const [showForm, setShowForm] = useState(false);
+  const [showClone, setShowClone] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [gitConfigured, setGitConfigured] = useState(null);
 
@@ -146,8 +149,8 @@ export default function Sidebar({
       .catch(() => {});
   }, [showSettings]);
 
-  async function handleCreate(name, workingDirectory) {
-    await onCreate(name, workingDirectory);
+  async function handleCreate(name, localOnly) {
+    await onCreate(name, localOnly);
     setShowForm(false);
   }
 
@@ -290,15 +293,34 @@ export default function Sidebar({
       <div className="p-3">
         {showForm ? (
           <NewAgentForm onSubmit={handleCreate} onCancel={() => setShowForm(false)} />
+        ) : showClone ? (
+          <GitHubClonePanel
+            onClone={async (repoFullName) => {
+              const agent = await onClone(repoFullName);
+              setShowClone(false);
+              onSelect(agent.id);
+            }}
+            onCancel={() => setShowClone(false)}
+          />
         ) : (
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => setShowForm(true)}
-          >
-            <Plus className="h-4 w-4" />
-            New Project
-          </Button>
+          <div className="space-y-1.5">
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => setShowForm(true)}
+            >
+              <Plus className="h-4 w-4" />
+              New Project
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => setShowClone(true)}
+            >
+              <Download className="h-4 w-4" />
+              Clone from GitHub
+            </Button>
+          </div>
         )}
       </div>
     </div>

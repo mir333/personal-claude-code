@@ -6,6 +6,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import crypto from "crypto";
+import https from "https";
 import session from "express-session";
 import {
   createAgent,
@@ -104,20 +105,200 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, "..", "dist")));
 
+// Helper: read GitHub token and owner from stored credentials
+function readGitToken() {
+  try {
+    const content = fs.readFileSync(GIT_CREDENTIALS_PATH, "utf-8");
+    const match = content.match(/https:\/\/([^@]+)@github\.com/);
+    if (match) return match[1];
+  } catch {
+    // file doesn't exist
+  }
+  return null;
+}
+
+function githubApi(method, apiPath, token, body) {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = https.request(
+      {
+        hostname: "api.github.com",
+        path: apiPath,
+        method,
+        headers: {
+          Authorization: `token ${token}`,
+          "User-Agent": "claude-container",
+          Accept: "application/vnd.github.v3+json",
+          ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}),
+        },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => {
+          try {
+            resolve({ status: res.statusCode, data: JSON.parse(body) });
+          } catch {
+            resolve({ status: res.statusCode, data: body });
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+function execPromise(cmd, args, opts) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, opts, (err, stdout, stderr) => {
+      if (err) reject(new Error(stderr || err.message));
+      else resolve(stdout);
+    });
+  });
+}
+
+function slugify(name) {
+  return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
+
+async function configureLocalGit(dir) {
+  const [globalName, globalEmail] = await Promise.all([
+    gitExec(["config", "--global", "--get", "user.name"], "/"),
+    gitExec(["config", "--global", "--get", "user.email"], "/"),
+  ]);
+  if (globalName) await execPromise("git", ["config", "user.name", globalName], { cwd: dir });
+  if (globalEmail) await execPromise("git", ["config", "user.email", globalEmail], { cwd: dir });
+}
+
 // REST API
-app.post("/api/agents", (req, res) => {
-  const { name, workingDirectory } = req.body;
-  if (!name || !workingDirectory) {
-    return res.status(400).json({ error: "name and workingDirectory are required" });
+app.post("/api/agents", async (req, res) => {
+  const { name, workingDirectory, localOnly } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "name is required" });
   }
-  const normalized = path.normalize(workingDirectory).replace(/\/+$/, "");
-  if (normalized === "/workspace" || !normalized.startsWith("/workspace/")) {
-    return res.status(400).json({ error: "workingDirectory must be a subfolder of /workspace (e.g. /workspace/my-project)" });
+
+  // Mode 1: Existing directory (clicked from workspace list)
+  if (workingDirectory) {
+    const normalized = path.normalize(workingDirectory).replace(/\/+$/, "");
+    if (normalized === "/workspace" || !normalized.startsWith("/workspace/")) {
+      return res.status(400).json({ error: "workingDirectory must be a subfolder of /workspace (e.g. /workspace/my-project)" });
+    }
+    fs.mkdirSync(normalized, { recursive: true });
+    const agent = createAgent(name, normalized);
+    return res.status(201).json(agent);
   }
-  // Ensure the workspace directory exists
-  fs.mkdirSync(normalized, { recursive: true });
-  const agent = createAgent(name, normalized);
-  res.status(201).json(agent);
+
+  // Mode 2: New project
+  const slug = slugify(name);
+  if (!slug) {
+    return res.status(400).json({ error: "Name must contain at least one alphanumeric character" });
+  }
+  const projectDir = `/workspace/${slug}`;
+
+  if (fs.existsSync(projectDir)) {
+    return res.status(409).json({ error: `Directory /workspace/${slug} already exists` });
+  }
+
+  try {
+    if (localOnly) {
+      // Local-only: create dir + git init
+      fs.mkdirSync(projectDir, { recursive: true });
+      await execPromise("git", ["init"], { cwd: projectDir });
+      await configureLocalGit(projectDir);
+    } else {
+      // GitHub mode: create repo via API, then clone
+      const token = readGitToken();
+      if (!token) {
+        return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
+      }
+
+      // Get GitHub username
+      const userRes = await githubApi("GET", "/user", token);
+      if (userRes.status !== 200) {
+        return res.status(400).json({ error: "GitHub token is invalid or expired. Update it in Git Settings." });
+      }
+      const owner = userRes.data.login;
+
+      // Create private repo
+      const repoRes = await githubApi("POST", "/user/repos", token, { name: slug, private: true });
+      if (repoRes.status === 422) {
+        const msg = repoRes.data.errors?.[0]?.message || "Repository name already taken on GitHub";
+        return res.status(409).json({ error: msg });
+      }
+      if (repoRes.status !== 201) {
+        return res.status(502).json({ error: `GitHub API error: ${repoRes.data.message || "Unknown error"}` });
+      }
+
+      // Clone the repo
+      const cloneUrl = `https://${token}@github.com/${owner}/${slug}.git`;
+      await execPromise("git", ["clone", cloneUrl, slug], { cwd: "/workspace", timeout: 30000 });
+      await configureLocalGit(projectDir);
+    }
+
+    const agent = createAgent(name, projectDir);
+    res.status(201).json(agent);
+  } catch (err) {
+    // Clean up directory if it was partially created
+    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch {}
+    res.status(500).json({ error: err.message || "Failed to create project" });
+  }
+});
+
+app.get("/api/github/repos", async (_req, res) => {
+  const token = readGitToken();
+  if (!token) {
+    return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
+  }
+  try {
+    // Fetch up to 100 repos, sorted by most recently updated
+    const result = await githubApi("GET", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member", token);
+    if (result.status !== 200) {
+      return res.status(400).json({ error: "GitHub token is invalid or expired. Update it in Git Settings." });
+    }
+    const repos = result.data.map((r) => ({
+      full_name: r.full_name,
+      name: r.name,
+      private: r.private,
+      description: r.description || "",
+      updated_at: r.updated_at,
+      owner: r.owner.login,
+    }));
+    res.json(repos);
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to fetch repos" });
+  }
+});
+
+app.post("/api/agents/clone", async (req, res) => {
+  const { repoFullName } = req.body;
+  if (!repoFullName) {
+    return res.status(400).json({ error: "repoFullName is required (e.g. owner/repo)" });
+  }
+
+  const token = readGitToken();
+  if (!token) {
+    return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
+  }
+
+  const repoName = repoFullName.split("/").pop();
+  const projectDir = `/workspace/${repoName}`;
+
+  if (fs.existsSync(projectDir)) {
+    return res.status(409).json({ error: `Directory /workspace/${repoName} already exists` });
+  }
+
+  try {
+    const cloneUrl = `https://${token}@github.com/${repoFullName}.git`;
+    await execPromise("git", ["clone", cloneUrl, repoName], { cwd: "/workspace", timeout: 60000 });
+    await configureLocalGit(projectDir);
+    const agent = createAgent(repoName, projectDir);
+    res.status(201).json(agent);
+  } catch (err) {
+    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch {}
+    res.status(500).json({ error: err.message || "Failed to clone repository" });
+  }
 });
 
 app.get("/api/agents", (_req, res) => {

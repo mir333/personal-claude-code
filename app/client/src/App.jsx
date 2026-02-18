@@ -26,7 +26,7 @@ export default function App() {
   const [interactiveQuestions, setInteractiveQuestions] = useState({});
   const [pendingQuestions, setPendingQuestions] = useState({});
   const terminalDataRef = useRef(null);
-  const { agents, gitStatuses, fetchAgents, createAgent, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
+  const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
@@ -293,7 +293,8 @@ export default function App() {
           agents={agents}
           selectedId={selectedAgentId}
           onSelect={handleSelectAgent}
-          onCreate={async (name, dir) => { const a = await createAgent(name, dir); fetchDirectories(); return a; }}
+          onCreate={async (name, localOnlyOrWorkDir) => { const a = await createAgent(name, localOnlyOrWorkDir); fetchDirectories(); return a; }}
+          onClone={async (repoFullName) => { const a = await cloneRepo(repoFullName); fetchDirectories(); return a; }}
           onDelete={handleDeleteAgent}
           directories={directories}
           findAgentByWorkDir={findAgentByWorkDir}
