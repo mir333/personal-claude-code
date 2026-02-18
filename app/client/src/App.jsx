@@ -261,6 +261,26 @@ export default function App() {
     });
   }
 
+  async function handleDeleteProject(dirName, agentId) {
+    try {
+      const res = await fetch(`/api/workspace/${encodeURIComponent(dirName)}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || "Failed to delete project");
+        return;
+      }
+      // Clean up agent state if one was associated
+      if (agentId) {
+        if (selectedAgentId === agentId) setSelectedAgentId(null);
+        setConversations((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
+      }
+      fetchAgents();
+      fetchDirectories();
+    } catch {
+      alert("Failed to delete project");
+    }
+  }
+
   async function handleToggleInteractiveQuestions() {
     if (!selectedAgentId) return;
     const newValue = !interactiveQuestions[selectedAgentId];
@@ -349,6 +369,7 @@ export default function App() {
           onCreate={async (name, localOnlyOrWorkDir, provider) => { const a = await createAgent(name, localOnlyOrWorkDir, provider); fetchDirectories(); return a; }}
           onClone={async (repoFullName, provider) => { const a = await cloneRepo(repoFullName, provider); fetchDirectories(); return a; }}
           onDelete={handleDeleteAgent}
+          onDeleteProject={handleDeleteProject}
           onBranchChange={fetchGitStatus}
           directories={directories}
           findAgentByWorkDir={findAgentByWorkDir}

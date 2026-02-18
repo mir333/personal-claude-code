@@ -306,6 +306,7 @@ export default function Sidebar({
   onCreate,
   onClone,
   onDelete,
+  onDeleteProject,
   onBranchChange,
   directories,
   findAgentByWorkDir,
@@ -400,11 +401,11 @@ export default function Sidebar({
             const agent = findAgentByWorkDir(dir.path);
             const isSelected = agent && agent.id === selectedId;
             return (
-              <button
+              <div
                 key={dir.path}
                 onClick={() => handleDirClick(dir)}
                 className={cn(
-                  "w-full flex items-center gap-2 rounded-md px-2 py-2 text-sm text-left transition-colors cursor-pointer",
+                  "w-full flex items-center gap-2 rounded-md px-2 py-2 text-sm text-left transition-colors cursor-pointer group",
                   isSelected
                     ? "bg-sidebar-accent text-sidebar-accent-foreground"
                     : "hover:bg-sidebar-accent/50"
@@ -420,7 +421,18 @@ export default function Sidebar({
                     className={cn("h-2.5 w-2.5 shrink-0 fill-current", STATUS_COLORS[agent.status] || "text-muted-foreground")}
                   />
                 )}
-              </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm(`Delete project "${dir.name}"? This will permanently remove the directory and all its files.`)) {
+                      onDeleteProject(dir.name, agent?.id);
+                    }
+                  }}
+                  className="text-muted-foreground hover:text-destructive text-sm shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  ✕
+                </button>
+              </div>
             );
           })}
         </div>

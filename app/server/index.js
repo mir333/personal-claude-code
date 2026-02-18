@@ -467,6 +467,30 @@ app.delete("/api/agents/:id", (req, res) => {
   res.status(204).end();
 });
 
+app.delete("/api/workspace/:name", (req, res) => {
+  const dirName = req.params.name;
+  if (!dirName || dirName.includes("/") || dirName.includes("..") || dirName.startsWith(".")) {
+    return res.status(400).json({ error: "Invalid directory name" });
+  }
+  const dirPath = `/workspace/${dirName}`;
+  if (!fs.existsSync(dirPath)) {
+    return res.status(404).json({ error: "Directory not found" });
+  }
+  // Also delete any agent associated with this directory
+  const agents = listAgents();
+  for (const agent of agents) {
+    if (agent.workingDirectory === dirPath) {
+      deleteAgent(agent.id);
+    }
+  }
+  try {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to delete directory" });
+  }
+});
+
 app.get("/api/workspace", async (_req, res) => {
   try {
     const entries = await fs.promises.readdir("/workspace", { withFileTypes: true });
