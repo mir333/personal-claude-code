@@ -675,6 +675,63 @@ app.get("/api/agents/:id/git-status", async (req, res) => {
   res.json({ isRepo: true, branch: branch || "unknown", state, unpushed, pr });
 });
 
+app.get("/api/agents/:id/branches", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const cwd = agent.workingDirectory;
+  const topLevel = await gitExec(["rev-parse", "--show-toplevel"], cwd);
+  if (topLevel === null) {
+    return res.status(400).json({ error: "Not a git repository" });
+  }
+
+  // Fetch remotes first so we see remote branches
+  await execPromise("git", ["fetch", "--all", "--prune"], { cwd, timeout: 15000 }).catch(() => {});
+
+  const [localRaw, remoteRaw, currentBranch] = await Promise.all([
+    gitExec(["branch", "--format=%(refname:short)"], cwd),
+    gitExec(["branch", "-r", "--format=%(refname:short)"], cwd),
+    gitExec(["rev-parse", "--abbrev-ref", "HEAD"], cwd),
+  ]);
+
+  const local = localRaw ? localRaw.split("\n").filter(Boolean) : [];
+  const remote = remoteRaw
+    ? remoteRaw.split("\n").filter((b) => b && !b.includes("HEAD")).map((b) => b.replace(/^origin\//, ""))
+    : [];
+
+  // Merge: all unique branch names, local ones first
+  const seen = new Set(local);
+  const remoteOnly = remote.filter((b) => !seen.has(b));
+
+  res.json({
+    current: currentBranch || "HEAD",
+    branches: [
+      ...local.map((b) => ({ name: b, local: true })),
+      ...remoteOnly.map((b) => ({ name: b, local: false })),
+    ],
+  });
+});
+
+app.post("/api/agents/:id/checkout", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const { branch } = req.body;
+  if (!branch) {
+    return res.status(400).json({ error: "branch is required" });
+  }
+
+  const cwd = agent.workingDirectory;
+  try {
+    // Try checkout; if it's a remote-only branch, git will auto-track it
+    await execPromise("git", ["checkout", branch], { cwd, timeout: 10000 });
+    const current = await gitExec(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+    res.json({ ok: true, branch: current || branch });
+  } catch (err) {
+    res.status(400).json({ error: err.message || "Failed to checkout branch" });
+  }
+});
+
 app.patch("/api/agents/:id/settings", (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });

@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import NewAgentForm from "./NewAgentForm.jsx";
@@ -19,15 +20,139 @@ const GIT_STATE = {
   clean: { color: "text-green-500", label: "Up to date" },
 };
 
-function GitStatus({ git }) {
+function GitStatus({ git, agentId, onBranchChange }) {
   if (!git || !git.isRepo) return null;
   const info = GIT_STATE[git.state] || GIT_STATE.clean;
+  const [open, setOpen] = useState(false);
+  const [branches, setBranches] = useState([]);
+  const [current, setCurrent] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [switching, setSwitching] = useState(null);
+  const [filter, setFilter] = useState("");
+  const [error, setError] = useState("");
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(e) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  function handleOpen(e) {
+    e.stopPropagation();
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    setFilter("");
+    setError("");
+    setLoading(true);
+    fetch(`/api/agents/${agentId}/branches`)
+      .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+      .then(({ ok, data }) => {
+        if (ok) {
+          setBranches(data.branches || []);
+          setCurrent(data.current || "");
+        } else {
+          setError(data.error || "Failed to load branches");
+        }
+      })
+      .catch(() => setError("Failed to load branches"))
+      .finally(() => setLoading(false));
+  }
+
+  async function handleCheckout(branchName) {
+    if (branchName === current) { setOpen(false); return; }
+    setSwitching(branchName);
+    setError("");
+    try {
+      const res = await fetch(`/api/agents/${agentId}/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch: branchName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setCurrent(data.branch);
+      setOpen(false);
+      if (onBranchChange) onBranchChange(agentId);
+    } catch (err) {
+      setError(err.message || "Failed to checkout");
+    } finally {
+      setSwitching(null);
+    }
+  }
+
+  const filtered = branches.filter((b) =>
+    b.name.toLowerCase().includes(filter.toLowerCase())
+  );
+
   return (
-    <div className={cn("flex items-center gap-1 text-xs", info.color)} title={info.label}>
-      <GitBranch className="h-3 w-3 shrink-0" />
-      <span className="truncate">{git.branch}</span>
-      {git.state === "dirty" && <span>*</span>}
-      {git.state === "ahead" && git.unpushed > 0 && <span>{git.unpushed}↑</span>}
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={handleOpen}
+        className={cn("flex items-center gap-1 text-xs hover:underline", info.color)}
+        title={`${info.label} — click to switch branch`}
+      >
+        <GitBranch className="h-3 w-3 shrink-0" />
+        <span className="truncate">{git.branch}</span>
+        {git.state === "dirty" && <span>*</span>}
+        {git.state === "ahead" && git.unpushed > 0 && <span>{git.unpushed}↑</span>}
+        <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-popover shadow-md">
+          <div className="p-1.5">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+              <Input
+                placeholder="Filter branches..."
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                className="pl-7 h-7 text-xs"
+                autoFocus
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+          </div>
+          {error && <p className="text-destructive text-xs px-3 pb-2">{error}</p>}
+          {loading ? (
+            <div className="flex items-center justify-center py-4 text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
+              <span className="text-xs">Loading...</span>
+            </div>
+          ) : (
+            <div className="max-h-48 overflow-y-auto pb-1">
+              {filtered.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center py-3">
+                  {filter ? "No matching branches" : "No branches found"}
+                </p>
+              )}
+              {filtered.map((b) => (
+                <button
+                  key={b.name}
+                  onClick={(e) => { e.stopPropagation(); handleCheckout(b.name); }}
+                  disabled={!!switching}
+                  className={cn(
+                    "w-full text-left px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors",
+                    "hover:bg-accent disabled:opacity-50",
+                    b.name === current && "font-semibold text-primary"
+                  )}
+                >
+                  <span className="truncate flex-1">{b.name}</span>
+                  {!b.local && <span className="text-muted-foreground/60 shrink-0">remote</span>}
+                  {b.name === current && <span className="text-primary shrink-0">*</span>}
+                  {switching === b.name && <Loader2 className="h-3 w-3 animate-spin shrink-0" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -181,6 +306,7 @@ export default function Sidebar({
   onCreate,
   onClone,
   onDelete,
+  onBranchChange,
   directories,
   findAgentByWorkDir,
   notificationsEnabled,
@@ -287,7 +413,7 @@ export default function Sidebar({
                 <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate">{dir.name}</div>
-                  {agent && <GitStatus git={gitStatuses[agent.id]} />}
+                  {agent && <GitStatus git={gitStatuses[agent.id]} agentId={agent.id} onBranchChange={onBranchChange} />}
                 </div>
                 {agent && (
                   <Circle
@@ -326,7 +452,7 @@ export default function Sidebar({
                     <div className="min-w-0 flex-1">
                       <div className="truncate">{agent.name}</div>
                       <div className="text-xs text-muted-foreground truncate">{agent.workingDirectory}</div>
-                      <GitStatus git={gitStatuses[agent.id]} />
+                      <GitStatus git={gitStatuses[agent.id]} agentId={agent.id} onBranchChange={onBranchChange} />
                     </div>
                     <button
                       onClick={(e) => {
