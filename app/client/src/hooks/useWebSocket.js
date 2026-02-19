@@ -2,13 +2,16 @@ import { useEffect, useRef, useCallback, useState } from "react";
 
 const BOOT_ID_KEY = "claude-ui-last-boot-id";
 
-export function useWebSocket(onMessage, onServerRestart) {
+export function useWebSocket(onMessage, onServerRestart, onReconnect) {
   const wsRef = useRef(null);
   const onMessageRef = useRef(onMessage);
   const onServerRestartRef = useRef(onServerRestart);
+  const onReconnectRef = useRef(onReconnect);
   const [connected, setConnected] = useState(false);
   onMessageRef.current = onMessage;
   onServerRestartRef.current = onServerRestart;
+  onReconnectRef.current = onReconnect;
+  const hasConnectedBefore = useRef(false);
 
   const reconnectTimerRef = useRef(null);
 
@@ -24,7 +27,13 @@ export function useWebSocket(onMessage, onServerRestart) {
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
     wsRef.current = ws;
 
-    ws.onopen = () => setConnected(true);
+    ws.onopen = () => {
+      setConnected(true);
+      if (hasConnectedBefore.current) {
+        onReconnectRef.current?.();
+      }
+      hasConnectedBefore.current = true;
+    };
     ws.onclose = () => {
       setConnected(false);
       reconnectTimerRef.current = setTimeout(connect, 2000);

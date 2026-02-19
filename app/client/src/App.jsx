@@ -31,11 +31,23 @@ export default function App() {
   const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
   const messagesEndRef = useRef(null);
+  const lastEventIndexRef = useRef({});
+  const reconnectHandlerRef = useRef(null);
 
   const handleWsMessage = useCallback(
     (msg) => {
       const { agentId, type, ...rest } = msg;
       if (!agentId) return;
+
+      // Deduplicate backfill events by eventIndex to handle race between
+      // async history reload and incoming backfill messages
+      if (msg.eventIndex != null) {
+        const seen = lastEventIndexRef.current[agentId] || 0;
+        if (msg.backfill && msg.eventIndex <= seen) {
+          return; // Already processed this event
+        }
+        lastEventIndexRef.current[agentId] = Math.max(seen, msg.eventIndex);
+      }
 
       if (type === "terminal_output") {
         if (terminalDataRef.current) {
@@ -49,6 +61,20 @@ export default function App() {
           ...prev,
           [agentId]: { input: rest.input, toolUseId: rest.toolUseId },
         }));
+        return;
+      }
+
+      if (type === "agent_status") {
+        updateAgentStatus(agentId, rest.status);
+        // Reload conversation from disk to get clean state
+        fetch(`/api/agents/${agentId}/history`)
+          .then((r) => r.ok ? r.json() : [])
+          .then((entries) => {
+            if (entries.length > 0) {
+              setConversations((prev) => ({ ...prev, [agentId]: entries }));
+            }
+          })
+          .catch(() => {});
         return;
       }
 
@@ -121,7 +147,24 @@ export default function App() {
     });
   }, []);
 
-  const { send, connected, reconnect } = useWebSocket(handleWsMessage, handleServerRestart);
+  const { send, connected, reconnect } = useWebSocket(handleWsMessage, handleServerRestart, () => reconnectHandlerRef.current?.());
+
+  // Ref indirection: handleReconnect needs `send` (from useWebSocket) and `agents`
+  // (latest state), but useWebSocket takes it as a parameter. The ref breaks this
+  // circular dependency while always providing the latest closure values.
+  reconnectHandlerRef.current = () => {
+    for (const agent of agents) {
+      if (agent.status === "busy") {
+        send({
+          type: "subscribe",
+          agentId: agent.id,
+          lastEventIndex: lastEventIndexRef.current[agent.id] || 0,
+        });
+      }
+    }
+    fetchAgents();
+  };
+
   const selectedConversation = conversations[selectedAgentId] || [];
 
   // Derive context window info from the last stats entry after the most recent context_cleared
