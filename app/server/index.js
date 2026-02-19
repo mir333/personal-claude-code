@@ -19,6 +19,9 @@ import {
   sendMessage,
   setInteractiveQuestions,
   answerQuestion,
+  subscribeAgent,
+  unsubscribeAgent,
+  getBufferedEvents,
 } from "./agents.js";
 import { getUsageStats } from "./usage.js";
 import {
@@ -873,6 +876,7 @@ server.on("upgrade", (request, socket, head) => {
 
 wss.on("connection", (ws) => {
   const connectionTerminals = new Set(); // track terminals opened by this connection
+  const connectionListeners = new Map(); // agentId -> listener fn
 
   // Send boot ID so clients can detect server restarts
   ws.send(JSON.stringify({ type: "welcome", bootId }));
@@ -896,15 +900,63 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (data.type === "subscribe" && data.agentId) {
+      const agent = getAgent(data.agentId);
+      if (!agent) return;
+
+      // Send current agent status
+      ws.send(JSON.stringify({ type: "agent_status", agentId: data.agentId, status: agent.status }));
+
+      // If agent is busy, subscribe for live updates and backfill missed events
+      if (agent.status === "busy") {
+        // Evict any existing listener for this agent to prevent leaks
+        const existing = connectionListeners.get(data.agentId);
+        if (existing) {
+          unsubscribeAgent(data.agentId, existing);
+        }
+
+        // Subscribe first to avoid missing events between backfill and live
+        const listener = (event) => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ ...event, agentId: data.agentId }));
+          }
+        };
+        subscribeAgent(data.agentId, listener);
+        connectionListeners.set(data.agentId, listener);
+
+        // Then backfill missed events (client deduplicates by eventIndex)
+        const sinceIndex = data.lastEventIndex || 0;
+        const missed = getBufferedEvents(data.agentId, sinceIndex);
+        for (const event of missed) {
+          if (ws.readyState !== ws.OPEN) break;
+          ws.send(JSON.stringify({ ...event, agentId: data.agentId, backfill: true }));
+        }
+      }
+      return;
+    }
+
     if (data.type === "message" && data.agentId && data.text) {
-      try {
-        await sendMessage(data.agentId, data.text, (event) => {
+      // Evict any existing listener for this agent to prevent leaks
+      const existingListener = connectionListeners.get(data.agentId);
+      if (existingListener) {
+        unsubscribeAgent(data.agentId, existingListener);
+      }
+      const listener = (event) => {
+        if (ws.readyState === ws.OPEN) {
           ws.send(JSON.stringify({ ...event, agentId: data.agentId }));
-        });
+        }
+      };
+      subscribeAgent(data.agentId, listener);
+      connectionListeners.set(data.agentId, listener);
+      try {
+        await sendMessage(data.agentId, data.text);
       } catch (err) {
         ws.send(
           JSON.stringify({ type: "error", agentId: data.agentId, message: err.message })
         );
+      } finally {
+        unsubscribeAgent(data.agentId, listener);
+        connectionListeners.delete(data.agentId);
       }
     } else if (data.type === "terminal_start" && data.agentId) {
       const agent = getAgent(data.agentId);
@@ -931,6 +983,10 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    for (const [agentId, listener] of connectionListeners) {
+      unsubscribeAgent(agentId, listener);
+    }
+    connectionListeners.clear();
     killAllTerminals(connectionTerminals);
     connectionTerminals.clear();
   });
