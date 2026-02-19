@@ -19,6 +19,9 @@ export function createAgent(name, workingDirectory) {
     textBuffer: "",
     interactiveQuestions: false,
     pendingQuestion: null,
+    listeners: new Set(),      // Set of callback functions
+    eventBuffer: [],           // Array of { index, event } for reconnect backfill
+    eventIndex: 0,             // Monotonically increasing event counter
   };
   agents.set(id, agent);
   return agent;
@@ -87,6 +90,30 @@ export function answerQuestion(id, answers) {
   return true;
 }
 
+export function subscribeAgent(id, listener) {
+  const agent = agents.get(id);
+  if (!agent) return null;
+  agent.listeners.add(listener);
+  return agent;
+}
+
+export function unsubscribeAgent(id, listener) {
+  const agent = agents.get(id);
+  if (!agent) return;
+  agent.listeners.delete(listener);
+}
+
+export function getAgentEventIndex(id) {
+  const agent = agents.get(id);
+  return agent ? agent.eventIndex : 0;
+}
+
+export function getBufferedEvents(id, sinceIndex) {
+  const agent = agents.get(id);
+  if (!agent) return [];
+  return agent.eventBuffer.filter((e) => e.index > sinceIndex).map((e) => e.event);
+}
+
 function formatUserAnswer(toolInput, answers) {
   const questions = toolInput?.questions || [];
   const lines = ["The user was asked and provided their answers directly:"];
@@ -99,14 +126,30 @@ function formatUserAnswer(toolInput, answers) {
   return lines.join("\n");
 }
 
-export async function sendMessage(id, text, onEvent) {
+export async function sendMessage(id, text) {
   const agent = agents.get(id);
   if (!agent) throw new Error("Agent not found");
   if (agent.status === "busy") throw new Error("Agent is busy");
 
   agent.status = "busy";
+  agent.eventBuffer = [];
+  agent.eventIndex = 0;
   agent.history.push({ role: "user", content: text, timestamp: Date.now() });
   agent.textBuffer = "";
+
+  function emit(event) {
+    const eventWithIndex = { ...event, eventIndex: ++agent.eventIndex };
+    agent.eventBuffer.push({ index: agent.eventIndex, event: eventWithIndex });
+    // Keep buffer bounded to avoid memory leak
+    if (agent.eventBuffer.length > 1000) {
+      agent.eventBuffer = agent.eventBuffer.slice(-500);
+    }
+    for (const listener of agent.listeners) {
+      try { listener(eventWithIndex); } catch (err) {
+        console.error('[agents] listener error:', err.message);
+      }
+    }
+  }
 
   // Persist user message
   appendEntry(agent.workingDirectory, { type: "user", text });
@@ -134,7 +177,7 @@ export async function sendMessage(id, text, onEvent) {
           matcher: "AskUserQuestion",
           hooks: [async (hookInput, toolUseId, { signal }) => {
             // Send question_pending event to client
-            onEvent({ type: "question_pending", input: hookInput.tool_input, toolUseId });
+            emit({ type: "question_pending", input: hookInput.tool_input, toolUseId });
 
             // Wait for user's answer via Promise
             const answer = await new Promise((resolve, reject) => {
@@ -185,7 +228,7 @@ export async function sendMessage(id, text, onEvent) {
         const event = message.event;
         if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
           agent.textBuffer += event.delta.text;
-          onEvent({ type: "text_delta", text: event.delta.text });
+          emit({ type: "text_delta", text: event.delta.text });
         }
       }
 
@@ -200,7 +243,7 @@ export async function sendMessage(id, text, onEvent) {
               toolUseId: block.id,
             };
             appendEntry(agent.workingDirectory, entry);
-            onEvent(entry);
+            emit(entry);
           }
         }
       }
@@ -217,7 +260,7 @@ export async function sendMessage(id, text, onEvent) {
                 : JSON.stringify(block.content),
             };
             appendEntry(agent.workingDirectory, entry);
-            onEvent(entry);
+            emit(entry);
           }
         }
       }
@@ -229,7 +272,7 @@ export async function sendMessage(id, text, onEvent) {
         // Handle error subtypes
         if (message.subtype !== "success") {
           const errorMsg = message.errors ? message.errors.join("; ") : `Stopped: ${message.subtype}`;
-          onEvent({ type: "error", message: errorMsg });
+          emit({ type: "error", message: errorMsg });
         }
 
         agent.history.push({
@@ -265,14 +308,14 @@ export async function sendMessage(id, text, onEvent) {
           durationMs: doneEvent.durationMs,
         });
 
-        onEvent(doneEvent);
+        emit(doneEvent);
       }
     }
   } catch (err) {
     if (err.name !== "AbortError") {
       agent.status = "error";
       appendEntry(agent.workingDirectory, { type: "error", message: err.message });
-      onEvent({ type: "error", message: err.message });
+      emit({ type: "error", message: err.message });
       return;
     }
   } finally {
