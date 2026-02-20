@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -313,6 +313,8 @@ export default function Sidebar({
   notificationsEnabled,
   toggleNotifications,
   gitStatuses = {},
+  profile = null,
+  onLogout,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [showClone, setShowClone] = useState(false);
@@ -347,40 +349,97 @@ export default function Sidebar({
 
   return (
     <div className="w-72 border-r border-border flex flex-col h-full bg-sidebar text-sidebar-foreground">
-      <div className="p-4 pb-3 flex items-center justify-between">
-        <h1 className="text-lg font-semibold tracking-tight">Claude Agents</h1>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 shrink-0 relative"
-            onClick={() => setShowSettings((v) => !v)}
-            title="Git settings"
-          >
-            <Settings className="h-4 w-4" />
-            {gitConfigured !== null && (
-              <span
-                className={cn(
-                  "absolute top-1 right-1 h-2 w-2 rounded-full",
-                  gitConfigured ? "bg-green-500" : "bg-red-500"
+      <div className="p-4 pb-3">
+        {profile ? (
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center text-white font-bold text-sm shadow-md shadow-primary/20 shrink-0">
+              {profile.name?.charAt(0)?.toUpperCase() || "U"}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold truncate leading-tight">{profile.name}</div>
+              <div className="text-[11px] text-muted-foreground truncate">@{profile.slug}</div>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 relative"
+                onClick={() => setShowSettings((v) => !v)}
+                title="Git settings"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                {gitConfigured !== null && (
+                  <span
+                    className={cn(
+                      "absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full",
+                      gitConfigured ? "bg-green-500" : "bg-red-500"
+                    )}
+                  />
                 )}
-              />
-            )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            onClick={toggleNotifications}
-            title={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
-          >
-            {notificationsEnabled ? (
-              <BellRing className="h-4 w-4" />
-            ) : (
-              <BellOff className="h-4 w-4 text-muted-foreground" />
-            )}
-          </Button>
-        </div>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={toggleNotifications}
+                title={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
+              >
+                {notificationsEnabled ? (
+                  <BellRing className="h-3.5 w-3.5" />
+                ) : (
+                  <BellOff className="h-3.5 w-3.5 text-muted-foreground" />
+                )}
+              </Button>
+              {onLogout && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  onClick={onLogout}
+                  title="Sign out"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <h1 className="text-lg font-semibold tracking-tight">Claude Agents</h1>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0 relative"
+                onClick={() => setShowSettings((v) => !v)}
+                title="Git settings"
+              >
+                <Settings className="h-4 w-4" />
+                {gitConfigured !== null && (
+                  <span
+                    className={cn(
+                      "absolute top-1 right-1 h-2 w-2 rounded-full",
+                      gitConfigured ? "bg-green-500" : "bg-red-500"
+                    )}
+                  />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={toggleNotifications}
+                title={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
+              >
+                {notificationsEnabled ? (
+                  <BellRing className="h-4 w-4" />
+                ) : (
+                  <BellOff className="h-4 w-4 text-muted-foreground" />
+                )}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
       <Separator />
       <ScrollArea className="flex-1">
@@ -395,7 +454,11 @@ export default function Sidebar({
             Workspace
           </p>
           {directories.length === 0 && (
-            <p className="px-2 py-3 text-xs text-muted-foreground">No projects found</p>
+            <div className="flex flex-col items-center py-6 px-2 text-center">
+              <FolderOpen className="h-10 w-10 text-muted-foreground/20 mb-2" />
+              <p className="text-xs text-muted-foreground mb-1">No projects yet</p>
+              <p className="text-[11px] text-muted-foreground/60">Create a project or clone a repo to get started</p>
+            </div>
           )}
           {directories.map((dir) => {
             const agent = findAgentByWorkDir(dir.path);

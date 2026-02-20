@@ -6,30 +6,47 @@ import { homedir } from "os";
 const USAGE_DIR = path.join(homedir(), ".claude-ui");
 const USAGE_FILE = path.join(USAGE_DIR, "usage.json");
 
-// In-memory session stats (resets on server restart)
-const session = {
-  totalCost: 0,
-  inputTokens: 0,
-  outputTokens: 0,
-  cacheReadTokens: 0,
-  cacheCreationTokens: 0,
-  requests: 0,
-  modelCosts: {},  // { [modelName]: { cost, inputTokens, outputTokens } }
-};
+// In-memory session stats (resets on server restart), keyed by profileId (or "_global")
+const sessions = {};
 
-function loadWeeklyFile() {
+function getSession(profileId) {
+  const key = profileId || "_global";
+  if (!sessions[key]) {
+    sessions[key] = {
+      totalCost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      requests: 0,
+      modelCosts: {},
+    };
+  }
+  return sessions[key];
+}
+
+function getUsageFilePath(profileId) {
+  if (profileId) {
+    return path.join("/home/node/.claude/profiles", profileId, "usage.json");
+  }
+  return USAGE_FILE;
+}
+
+function loadWeeklyFile(profileId) {
   try {
-    return JSON.parse(readFileSync(USAGE_FILE, "utf-8"));
+    return JSON.parse(readFileSync(getUsageFilePath(profileId), "utf-8"));
   } catch {
     return { daily: {} };
   }
 }
 
-function saveWeeklyFile(data) {
-  mkdirSync(USAGE_DIR, { recursive: true });
-  const tmp = USAGE_FILE + "." + randomBytes(4).toString("hex") + ".tmp";
+function saveWeeklyFile(data, profileId) {
+  const filePath = getUsageFilePath(profileId);
+  const dir = path.dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const tmp = filePath + "." + randomBytes(4).toString("hex") + ".tmp";
   writeFileSync(tmp, JSON.stringify(data, null, 2));
-  renameSync(tmp, USAGE_FILE);
+  renameSync(tmp, filePath);
 }
 
 function todayKey() {
@@ -49,7 +66,7 @@ function getWeekBounds() {
   return { mon, sun };
 }
 
-export function recordUsage(doneMsg) {
+export function recordUsage(doneMsg, profileId) {
   const usage = doneMsg.usage || {};
   const cost = doneMsg.cost || 0;
   const input = usage.input_tokens || 0;
@@ -60,6 +77,7 @@ export function recordUsage(doneMsg) {
   const modelUsage = doneMsg.modelUsage || {};
 
   // Update in-memory session
+  const session = getSession(profileId);
   session.totalCost += cost;
   session.inputTokens += input;
   session.outputTokens += output;
@@ -75,7 +93,7 @@ export function recordUsage(doneMsg) {
   }
 
   // Persist daily entry
-  const data = loadWeeklyFile();
+  const data = loadWeeklyFile(profileId);
   const key = todayKey();
   const day = data.daily[key] || {
     cost: 0,
@@ -100,12 +118,12 @@ export function recordUsage(doneMsg) {
     day.modelCosts[model] = d;
   }
   data.daily[key] = day;
-  saveWeeklyFile(data);
+  saveWeeklyFile(data, profileId);
 }
 
-export function getUsageStats() {
+export function getUsageStats(profileId) {
   // Compute weekly aggregate from persisted daily data
-  const data = loadWeeklyFile();
+  const data = loadWeeklyFile(profileId);
   const { mon, sun } = getWeekBounds();
   const weekly = {
     totalCost: 0,
@@ -136,6 +154,7 @@ export function getUsageStats() {
     }
   }
 
+  const session = getSession(profileId);
   return {
     session: { ...session, modelCosts: { ...session.modelCosts } },
     weekly,

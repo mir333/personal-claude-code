@@ -19,6 +19,7 @@ import Terminal from "./components/Terminal.jsx";
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(null); // null = loading
+  const [profile, setProfile] = useState(null); // { id, name, slug } or null
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [conversations, setConversations] = useState({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -228,7 +229,12 @@ export default function App() {
   useEffect(() => {
     fetch("/api/auth/check")
       .then((r) => r.json())
-      .then((data) => setAuthenticated(data.authenticated))
+      .then((data) => {
+        setAuthenticated(data.authenticated);
+        if (data.authenticated && data.profile) {
+          setProfile(data.profile);
+        }
+      })
       .catch(() => setAuthenticated(false));
   }, []);
 
@@ -324,6 +330,16 @@ export default function App() {
     }
   }
 
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {}
+    setAuthenticated(false);
+    setProfile(null);
+    setSelectedAgentId(null);
+    setConversations({});
+  }
+
   async function handleToggleInteractiveQuestions() {
     if (!selectedAgentId) return;
     const newValue = !interactiveQuestions[selectedAgentId];
@@ -387,7 +403,7 @@ export default function App() {
   }
 
   if (!authenticated) {
-    return <LoginScreen onSuccess={() => setAuthenticated(true)} />;
+    return <LoginScreen onSuccess={(profileData) => { setAuthenticated(true); setProfile(profileData || null); }} />;
   }
 
   return (
@@ -419,6 +435,8 @@ export default function App() {
           notificationsEnabled={notificationsEnabled}
           toggleNotifications={toggleNotifications}
           gitStatuses={gitStatuses}
+          profile={profile}
+          onLogout={handleLogout}
         />
       </div>
 
@@ -545,8 +563,14 @@ export default function App() {
             )}
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground">
-            Select a project or create one to start chatting
+          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3 p-8">
+            <div className="h-16 w-16 rounded-2xl bg-muted/30 border border-border/50 flex items-center justify-center mb-2">
+              <Menu className="h-8 w-8 text-muted-foreground/30" />
+            </div>
+            <p className="text-sm font-medium text-foreground/60">No project selected</p>
+            <p className="text-xs text-muted-foreground/60 text-center max-w-xs">
+              Select a project from the sidebar or create a new one to start chatting with Claude
+            </p>
           </div>
         )}
       </div>

@@ -31,6 +31,14 @@ import {
   resizeTerminal,
   killAllTerminals,
 } from "./terminals.js";
+import {
+  profilesExist,
+  listProfiles,
+  getProfile,
+  createProfile,
+  verifyProfile,
+  getProfilePaths,
+} from "./profiles.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -54,8 +62,65 @@ const sessionMiddleware = session({
 });
 app.use(sessionMiddleware);
 
+// --- Profile context helper ---
+function getProfileContext(req) {
+  if (req.profile) {
+    const paths = getProfilePaths(req.profile.id);
+    return {
+      profileId: req.profile.id,
+      gitDir: paths.gitDir,
+      workspaceRoot: paths.workspaceRoot,
+    };
+  }
+  // Legacy mode: global paths
+  return {
+    profileId: null,
+    gitDir: "/home/node/.claude/git",
+    workspaceRoot: "/workspace",
+  };
+}
+
+// --- Profile endpoints (public, no auth required for login flow) ---
+
+app.get("/api/profiles", (_req, res) => {
+  res.json(listProfiles());
+});
+
+app.post("/api/profiles", (req, res) => {
+  const { name, password } = req.body;
+  try {
+    const profile = createProfile(name, password);
+    // Auto-login
+    req.session.authenticated = true;
+    req.session.profileId = profile.id;
+    req.session.profileName = profile.name;
+    req.session.profileSlug = profile.slug;
+    res.status(201).json({ profile });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Auth routes (always mounted so client can check)
 app.post("/api/auth/login", (req, res) => {
+  // Profile-based login
+  if (req.body.profileId) {
+    const { profileId, password } = req.body;
+    if (!verifyProfile(profileId, password)) {
+      return res.status(401).json({ error: "Wrong password" });
+    }
+    const profile = getProfile(profileId);
+    if (!profile) {
+      return res.status(404).json({ error: "Profile not found" });
+    }
+    req.session.authenticated = true;
+    req.session.profileId = profile.id;
+    req.session.profileName = profile.name;
+    req.session.profileSlug = profile.slug;
+    return res.json({ authenticated: true, profile: { id: profile.id, name: profile.name, slug: profile.slug } });
+  }
+
+  // Legacy single-password mode
   if (!AUTH_PASSWORD) {
     return res.json({ authenticated: true });
   }
@@ -73,30 +138,75 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/auth/check", (req, res) => {
-  if (!AUTH_PASSWORD) {
-    return res.json({ authenticated: true });
+  const hasProfiles = profilesExist();
+
+  // Already authenticated with a profile
+  if (req.session.authenticated && req.session.profileId) {
+    return res.json({
+      authenticated: true,
+      profile: {
+        id: req.session.profileId,
+        name: req.session.profileName,
+        slug: req.session.profileSlug,
+      },
+    });
   }
-  res.json({ authenticated: req.session.authenticated === true });
+
+  // Already authenticated in legacy mode (no profiles)
+  if (req.session.authenticated && !hasProfiles) {
+    return res.json({ authenticated: true, profile: null });
+  }
+
+  // Not authenticated — if no password and no profiles, auto-auth (open mode)
+  if (!AUTH_PASSWORD && !hasProfiles) {
+    return res.json({ authenticated: true, profile: null });
+  }
+
+  res.json({ authenticated: false, profile: null, hasProfiles });
 });
 
 // Auth guard middleware
 function requireAuth(req, res, next) {
-  if (!AUTH_PASSWORD) return next();
-  if (req.session.authenticated) return next();
+  const hasProfiles = profilesExist();
 
-  if (req.path.startsWith("/api/")) {
+  // Open mode: no password, no profiles
+  if (!AUTH_PASSWORD && !hasProfiles) return next();
+
+  // Profile mode: require profile session
+  if (hasProfiles) {
+    if (req.session.authenticated && req.session.profileId) {
+      req.profile = {
+        id: req.session.profileId,
+        name: req.session.profileName,
+        slug: req.session.profileSlug,
+      };
+      return next();
+    }
+    if (req.path.startsWith("/api/")) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
     return res.status(401).json({ error: "Unauthorized" });
   }
-  // For page requests, let the SPA handle the redirect
-  return res.status(401).json({ error: "Unauthorized" });
+
+  // Legacy mode: AUTH_PASSWORD, no profiles
+  if (AUTH_PASSWORD) {
+    if (req.session.authenticated) return next();
+    if (req.path.startsWith("/api/")) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  return next();
 }
 
-// Apply auth guard to all API routes (except auth endpoints above)
+// Apply auth guard to all API routes (except auth/profile endpoints above)
 app.use("/api", requireAuth);
 
 // Serve static frontend — auth guard for HTML pages
 app.use((req, res, next) => {
-  if (!AUTH_PASSWORD) return next();
+  const hasProfiles = profilesExist();
+  if (!AUTH_PASSWORD && !hasProfiles) return next();
   if (req.session.authenticated) return next();
   // Allow static assets (JS, CSS, images) so the login page can load
   if (/\.(js|css|png|jpg|jpeg|svg|ico|woff2?|ttf|eot|map)(\?|$)/.test(req.path)) {
@@ -108,39 +218,49 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, "..", "dist")));
 
-// --- Provider config helpers ---
-const GIT_PERSIST_DIR = "/home/node/.claude/git";
-const GIT_CONFIG_PATH = path.join(GIT_PERSIST_DIR, "gitconfig");
-const GIT_CREDENTIALS_PATH = path.join(GIT_PERSIST_DIR, "git-credentials");
-const PROVIDERS_PATH = path.join(GIT_PERSIST_DIR, "providers.json");
-fs.mkdirSync(GIT_PERSIST_DIR, { recursive: true });
-process.env.GIT_CONFIG_GLOBAL = GIT_CONFIG_PATH;
+// --- Provider config helpers (profile-aware) ---
+const LEGACY_GIT_DIR = "/home/node/.claude/git";
+fs.mkdirSync(LEGACY_GIT_DIR, { recursive: true });
+process.env.GIT_CONFIG_GLOBAL = path.join(LEGACY_GIT_DIR, "gitconfig");
 
-function readProviders() {
+function getGitDir(profileId) {
+  if (profileId) {
+    const paths = getProfilePaths(profileId);
+    return paths ? paths.gitDir : LEGACY_GIT_DIR;
+  }
+  return LEGACY_GIT_DIR;
+}
+
+function readProviders(profileId) {
+  const gitDir = getGitDir(profileId);
+  const providersPath = path.join(gitDir, "providers.json");
   try {
-    return JSON.parse(fs.readFileSync(PROVIDERS_PATH, "utf-8"));
+    return JSON.parse(fs.readFileSync(providersPath, "utf-8"));
   } catch {
     return {};
   }
 }
 
-function writeProviders(providers) {
-  fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(providers, null, 2), { mode: 0o600 });
+function writeProviders(providers, profileId) {
+  const gitDir = getGitDir(profileId);
+  fs.mkdirSync(gitDir, { recursive: true });
+  fs.writeFileSync(path.join(gitDir, "providers.json"), JSON.stringify(providers, null, 2), { mode: 0o600 });
 }
 
-function getProviderToken(provider) {
-  const providers = readProviders();
+function getProviderToken(provider, profileId) {
+  const providers = readProviders(profileId);
   return providers[provider]?.token || null;
 }
 
-function getProviderConfig(provider) {
-  const providers = readProviders();
+function getProviderConfig(provider, profileId) {
+  const providers = readProviders(profileId);
   return providers[provider] || {};
 }
 
 // Rebuild git-credentials from all configured provider tokens
-function syncGitCredentials() {
-  const providers = readProviders();
+function syncGitCredentials(profileId) {
+  const gitDir = getGitDir(profileId);
+  const providers = readProviders(profileId);
   const lines = [];
   if (providers.github?.token) {
     lines.push(`https://${providers.github.token}@github.com`);
@@ -152,16 +272,18 @@ function syncGitCredentials() {
   if (providers.azuredevops?.token) {
     lines.push(`https://azuredevops:${providers.azuredevops.token}@dev.azure.com`);
   }
-  fs.writeFileSync(GIT_CREDENTIALS_PATH, lines.join("\n") + (lines.length ? "\n" : ""), { mode: 0o600 });
+  fs.writeFileSync(path.join(gitDir, "git-credentials"), lines.join("\n") + (lines.length ? "\n" : ""), { mode: 0o600 });
 }
 
 // Migrate legacy git-credentials to providers.json on first run
 try {
-  if (!fs.existsSync(PROVIDERS_PATH) && fs.existsSync(GIT_CREDENTIALS_PATH)) {
-    const content = fs.readFileSync(GIT_CREDENTIALS_PATH, "utf-8");
+  const legacyProviders = path.join(LEGACY_GIT_DIR, "providers.json");
+  const legacyCreds = path.join(LEGACY_GIT_DIR, "git-credentials");
+  if (!fs.existsSync(legacyProviders) && fs.existsSync(legacyCreds)) {
+    const content = fs.readFileSync(legacyCreds, "utf-8");
     const match = content.match(/https:\/\/([^@]+)@github\.com/);
     if (match) {
-      writeProviders({ github: { token: match[1] } });
+      writeProviders({ github: { token: match[1] } }, null);
     }
   }
 } catch {
@@ -237,18 +359,32 @@ function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
-async function configureLocalGit(dir) {
+async function configureLocalGit(dir, profileId) {
+  const gitDir = getGitDir(profileId);
+  const gitconfigPath = path.join(gitDir, "gitconfig");
   const [globalName, globalEmail] = await Promise.all([
-    gitExec(["config", "--global", "--get", "user.name"], "/"),
-    gitExec(["config", "--global", "--get", "user.email"], "/"),
+    gitExec(["config", "--file", gitconfigPath, "--get", "user.name"], "/"),
+    gitExec(["config", "--file", gitconfigPath, "--get", "user.email"], "/"),
   ]);
   if (globalName) await execPromise("git", ["config", "user.name", globalName], { cwd: dir });
   if (globalEmail) await execPromise("git", ["config", "user.email", globalEmail], { cwd: dir });
 }
 
+// Get git env for profile-scoped operations
+function gitEnvForProfile(profileId) {
+  const gitDir = getGitDir(profileId);
+  return {
+    GIT_CONFIG_GLOBAL: path.join(gitDir, "gitconfig"),
+  };
+}
+
 // REST API
 app.post("/api/agents", async (req, res) => {
   const { name, workingDirectory, localOnly, provider } = req.body;
+  const ctx = getProfileContext(req);
+  const profileId = ctx.profileId;
+  const workspaceRoot = ctx.workspaceRoot;
+
   if (!name) {
     return res.status(400).json({ error: "name is required" });
   }
@@ -256,11 +392,11 @@ app.post("/api/agents", async (req, res) => {
   // Mode 1: Existing directory (clicked from workspace list)
   if (workingDirectory) {
     const normalized = path.normalize(workingDirectory).replace(/\/+$/, "");
-    if (normalized === "/workspace" || !normalized.startsWith("/workspace/")) {
-      return res.status(400).json({ error: "workingDirectory must be a subfolder of /workspace (e.g. /workspace/my-project)" });
+    if (normalized === workspaceRoot || !normalized.startsWith(workspaceRoot + "/")) {
+      return res.status(400).json({ error: `workingDirectory must be a subfolder of ${workspaceRoot}` });
     }
     fs.mkdirSync(normalized, { recursive: true });
-    const agent = createAgent(name, normalized);
+    const agent = createAgent(name, normalized, profileId);
     return res.status(201).json(agent);
   }
 
@@ -269,20 +405,23 @@ app.post("/api/agents", async (req, res) => {
   if (!slug) {
     return res.status(400).json({ error: "Name must contain at least one alphanumeric character" });
   }
-  const projectDir = `/workspace/${slug}`;
+  const projectDir = path.join(workspaceRoot, slug);
 
   if (fs.existsSync(projectDir)) {
-    return res.status(409).json({ error: `Directory /workspace/${slug} already exists` });
+    return res.status(409).json({ error: `Directory ${projectDir} already exists` });
   }
 
   try {
+    // Ensure workspace root exists
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+
     if (localOnly) {
       // Local-only: create dir + git init
       fs.mkdirSync(projectDir, { recursive: true });
-      await execPromise("git", ["init"], { cwd: projectDir });
-      await configureLocalGit(projectDir);
+      await execPromise("git", ["init"], { cwd: projectDir, env: { ...process.env, ...gitEnvForProfile(profileId) } });
+      await configureLocalGit(projectDir, profileId);
     } else if (provider === "gitlab") {
-      const config = getProviderConfig("gitlab");
+      const config = getProviderConfig("gitlab", profileId);
       if (!config.token) {
         return res.status(400).json({ error: "GitLab token not configured. Set it in Git Settings." });
       }
@@ -309,11 +448,11 @@ app.post("/api/agents", async (req, res) => {
 
       const host = gitlabUrl.replace(/^https?:\/\//, "");
       const cloneUrl = `https://oauth2:${config.token}@${host}/${username}/${slug}.git`;
-      await execPromise("git", ["clone", cloneUrl, slug], { cwd: "/workspace", timeout: 30000 });
-      await configureLocalGit(projectDir);
+      await execPromise("git", ["clone", cloneUrl, slug], { cwd: workspaceRoot, timeout: 30000, env: { ...process.env, ...gitEnvForProfile(profileId) } });
+      await configureLocalGit(projectDir, profileId);
     } else {
       // GitHub mode (default)
-      const token = getProviderToken("github");
+      const token = getProviderToken("github", profileId);
       if (!token) {
         return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
       }
@@ -334,11 +473,11 @@ app.post("/api/agents", async (req, res) => {
       }
 
       const cloneUrl = `https://${token}@github.com/${owner}/${slug}.git`;
-      await execPromise("git", ["clone", cloneUrl, slug], { cwd: "/workspace", timeout: 30000 });
-      await configureLocalGit(projectDir);
+      await execPromise("git", ["clone", cloneUrl, slug], { cwd: workspaceRoot, timeout: 30000, env: { ...process.env, ...gitEnvForProfile(profileId) } });
+      await configureLocalGit(projectDir, profileId);
     }
 
-    const agent = createAgent(name, projectDir);
+    const agent = createAgent(name, projectDir, profileId);
     res.status(201).json(agent);
   } catch (err) {
     try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch {}
@@ -349,9 +488,10 @@ app.post("/api/agents", async (req, res) => {
 // List repos for a given provider
 app.get("/api/repos/:provider", async (req, res) => {
   const { provider } = req.params;
+  const profileId = req.profile?.id || null;
   try {
     if (provider === "github") {
-      const token = getProviderToken("github");
+      const token = getProviderToken("github", profileId);
       if (!token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
       const result = await githubApi("GET", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member", token);
       if (result.status !== 200) return res.status(400).json({ error: "GitHub token is invalid or expired. Update it in Git Settings." });
@@ -362,7 +502,7 @@ app.get("/api/repos/:provider", async (req, res) => {
     }
 
     if (provider === "gitlab") {
-      const config = getProviderConfig("gitlab");
+      const config = getProviderConfig("gitlab", profileId);
       if (!config.token) return res.status(400).json({ error: "GitLab token not configured. Set it in Git Settings." });
       const result = await gitlabApi("GET", "/api/v4/projects?membership=true&order_by=updated_at&sort=desc&per_page=100", config.token, config.url);
       if (result.status !== 200) return res.status(400).json({ error: "GitLab token is invalid or expired. Update it in Git Settings." });
@@ -373,7 +513,7 @@ app.get("/api/repos/:provider", async (req, res) => {
     }
 
     if (provider === "azuredevops") {
-      const config = getProviderConfig("azuredevops");
+      const config = getProviderConfig("azuredevops", profileId);
       if (!config.token) return res.status(400).json({ error: "Azure DevOps token not configured. Set it in Git Settings." });
       if (!config.organization) return res.status(400).json({ error: "Azure DevOps organization not configured. Set it in Git Settings." });
       const result = await azureDevOpsApi("GET", config.organization, "/_apis/git/repositories?api-version=7.0", config.token);
@@ -393,7 +533,8 @@ app.get("/api/repos/:provider", async (req, res) => {
 
 // Keep old endpoint for backward compat
 app.get("/api/github/repos", async (req, res) => {
-  const token = getProviderToken("github");
+  const profileId = req.profile?.id || null;
+  const token = getProviderToken("github", profileId);
   if (!token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
   try {
     const result = await githubApi("GET", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member", token);
@@ -409,31 +550,35 @@ app.get("/api/github/repos", async (req, res) => {
 
 app.post("/api/agents/clone", async (req, res) => {
   const { repoFullName, provider = "github" } = req.body;
+  const ctx = getProfileContext(req);
+  const profileId = ctx.profileId;
+  const workspaceRoot = ctx.workspaceRoot;
+
   if (!repoFullName) {
     return res.status(400).json({ error: "repoFullName is required (e.g. owner/repo)" });
   }
 
   const repoName = repoFullName.split("/").pop();
-  const projectDir = `/workspace/${repoName}`;
+  const projectDir = path.join(workspaceRoot, repoName);
 
   if (fs.existsSync(projectDir)) {
-    return res.status(409).json({ error: `Directory /workspace/${repoName} already exists` });
+    return res.status(409).json({ error: `Directory ${projectDir} already exists` });
   }
 
   try {
     let cloneUrl;
 
     if (provider === "github") {
-      const token = getProviderToken("github");
+      const token = getProviderToken("github", profileId);
       if (!token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
       cloneUrl = `https://${token}@github.com/${repoFullName}.git`;
     } else if (provider === "gitlab") {
-      const config = getProviderConfig("gitlab");
+      const config = getProviderConfig("gitlab", profileId);
       if (!config.token) return res.status(400).json({ error: "GitLab token not configured. Set it in Git Settings." });
       const host = (config.url || "https://gitlab.com").replace(/^https?:\/\//, "");
       cloneUrl = `https://oauth2:${config.token}@${host}/${repoFullName}.git`;
     } else if (provider === "azuredevops") {
-      const config = getProviderConfig("azuredevops");
+      const config = getProviderConfig("azuredevops", profileId);
       if (!config.token) return res.status(400).json({ error: "Azure DevOps token not configured. Set it in Git Settings." });
       if (!config.organization) return res.status(400).json({ error: "Azure DevOps organization not configured. Set it in Git Settings." });
       // repoFullName is "project/repo"
@@ -443,9 +588,11 @@ app.post("/api/agents/clone", async (req, res) => {
       return res.status(400).json({ error: `Unknown provider: ${provider}` });
     }
 
-    await execPromise("git", ["clone", cloneUrl, repoName], { cwd: "/workspace", timeout: 60000 });
-    await configureLocalGit(projectDir);
-    const agent = createAgent(repoName, projectDir);
+    // Ensure workspace root exists
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    await execPromise("git", ["clone", cloneUrl, repoName], { cwd: workspaceRoot, timeout: 60000, env: { ...process.env, ...gitEnvForProfile(profileId) } });
+    await configureLocalGit(projectDir, profileId);
+    const agent = createAgent(repoName, projectDir, profileId);
     res.status(201).json(agent);
   } catch (err) {
     try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch {}
@@ -453,8 +600,9 @@ app.post("/api/agents/clone", async (req, res) => {
   }
 });
 
-app.get("/api/agents", (_req, res) => {
-  res.json(listAgents());
+app.get("/api/agents", (req, res) => {
+  const profileId = req.profile?.id || null;
+  res.json(listAgents(profileId));
 });
 
 app.get("/api/agents/:id", (req, res) => {
@@ -472,16 +620,18 @@ app.delete("/api/agents/:id", (req, res) => {
 
 app.delete("/api/workspace/:name", (req, res) => {
   const dirName = req.params.name;
+  const ctx = getProfileContext(req);
   if (!dirName || dirName.includes("/") || dirName.includes("..") || dirName.startsWith(".")) {
     return res.status(400).json({ error: "Invalid directory name" });
   }
-  const dirPath = `/workspace/${dirName}`;
+  const dirPath = path.join(ctx.workspaceRoot, dirName);
   if (!fs.existsSync(dirPath)) {
     return res.status(404).json({ error: "Directory not found" });
   }
   // Also delete any agent associated with this directory
-  const agents = listAgents();
-  for (const agent of agents) {
+  const profileId = ctx.profileId;
+  const agentList = listAgents(profileId);
+  for (const agent of agentList) {
     if (agent.workingDirectory === dirPath) {
       deleteAgent(agent.id);
     }
@@ -494,20 +644,24 @@ app.delete("/api/workspace/:name", (req, res) => {
   }
 });
 
-app.get("/api/workspace", async (_req, res) => {
+app.get("/api/workspace", async (req, res) => {
+  const ctx = getProfileContext(req);
+  const workspaceRoot = ctx.workspaceRoot;
   try {
-    const entries = await fs.promises.readdir("/workspace", { withFileTypes: true });
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const entries = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
     const dirs = entries
       .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-      .map((e) => ({ name: e.name, path: `/workspace/${e.name}` }));
+      .map((e) => ({ name: e.name, path: path.join(workspaceRoot, e.name) }));
     res.json(dirs);
   } catch {
     res.json([]);
   }
 });
 
-app.get("/api/usage", (_req, res) => {
-  res.json(getUsageStats());
+app.get("/api/usage", (req, res) => {
+  const profileId = req.profile?.id || null;
+  res.json(getUsageStats(profileId));
 });
 
 app.post("/api/agents/:id/clear-context", (req, res) => {
@@ -533,7 +687,7 @@ function gitExec(args, cwd) {
 }
 
 // Parse git remote URL to detect provider + owner/repo
-function parseRemoteUrl(remoteUrl) {
+function parseRemoteUrl(remoteUrl, profileId) {
   let m;
   // GitHub (https or ssh, with or without token)
   m = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
@@ -542,7 +696,7 @@ function parseRemoteUrl(remoteUrl) {
   m = remoteUrl.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/.]+)/);
   if (m) return { provider: "azuredevops", org: m[1], project: m[2], repo: m[3] };
   // GitLab (check configured URL first, then gitlab.com)
-  const glConfig = getProviderConfig("gitlab");
+  const glConfig = getProviderConfig("gitlab", profileId);
   const glHost = (glConfig.url || "https://gitlab.com").replace(/^https?:\/\//, "").replace(/\/$/, "");
   const glRe = new RegExp(glHost.replace(/\./g, "\\.") + "[:/]([^/]+)/([^/.]+)");
   m = remoteUrl.match(glRe);
@@ -553,9 +707,9 @@ function parseRemoteUrl(remoteUrl) {
   return null;
 }
 
-async function fetchPrInfo(remote, branch) {
+async function fetchPrInfo(remote, branch, profileId) {
   if (remote.provider === "github") {
-    const token = getProviderToken("github");
+    const token = getProviderToken("github", profileId);
     if (!token) return null;
     const result = await githubApi("GET", `/repos/${remote.owner}/${remote.repo}/pulls?state=open&head=${remote.owner}:${branch}`, token);
     if (result.status === 200 && result.data.length > 0) {
@@ -563,7 +717,7 @@ async function fetchPrInfo(remote, branch) {
       return { provider: "github", number: pr.number, title: pr.title, url: pr.html_url, owner: remote.owner, repo: remote.repo };
     }
   } else if (remote.provider === "gitlab") {
-    const config = getProviderConfig("gitlab");
+    const config = getProviderConfig("gitlab", profileId);
     if (!config.token) return null;
     const projectPath = encodeURIComponent(`${remote.owner}/${remote.repo}`);
     const result = await gitlabApi("GET", `/api/v4/projects/${projectPath}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`, config.token, config.url);
@@ -572,7 +726,7 @@ async function fetchPrInfo(remote, branch) {
       return { provider: "gitlab", number: mr.iid, title: mr.title, url: mr.web_url, projectPath };
     }
   } else if (remote.provider === "azuredevops") {
-    const config = getProviderConfig("azuredevops");
+    const config = getProviderConfig("azuredevops", profileId);
     if (!config.token || !config.organization) return null;
     const result = await azureDevOpsApi("GET", config.organization,
       `/${remote.project}/_apis/git/repositories/${remote.repo}/pullrequests?searchCriteria.sourceRefName=refs/heads/${encodeURIComponent(branch)}&searchCriteria.status=active&api-version=7.0`,
@@ -592,6 +746,7 @@ async function fetchPrInfo(remote, branch) {
 app.post("/api/agents/:id/pr-review", async (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
+  const profileId = agent.profileId;
 
   const { body: reviewBody } = req.body;
   if (!reviewBody || !reviewBody.trim()) {
@@ -605,19 +760,19 @@ app.post("/api/agents/:id/pr-review", async (req, res) => {
     return res.status(400).json({ error: "Could not detect branch or remote" });
   }
 
-  const remote = parseRemoteUrl(remoteUrl);
+  const remote = parseRemoteUrl(remoteUrl, profileId);
   if (!remote) {
     return res.status(400).json({ error: "Could not detect git provider from remote URL" });
   }
 
   try {
-    const prInfo = await fetchPrInfo(remote, branch);
+    const prInfo = await fetchPrInfo(remote, branch, profileId);
     if (!prInfo) {
       return res.status(404).json({ error: `No open PR/MR found for branch "${branch}"` });
     }
 
     if (prInfo.provider === "github") {
-      const token = getProviderToken("github");
+      const token = getProviderToken("github", profileId);
       const result = await githubApi("POST", `/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}/reviews`, token, {
         body: reviewBody.trim(),
         event: "COMMENT",
@@ -629,7 +784,7 @@ app.post("/api/agents/:id/pr-review", async (req, res) => {
     }
 
     if (prInfo.provider === "gitlab") {
-      const config = getProviderConfig("gitlab");
+      const config = getProviderConfig("gitlab", profileId);
       const result = await gitlabApi("POST", `/api/v4/projects/${prInfo.projectPath}/merge_requests/${prInfo.number}/notes`, config.token, config.url, {
         body: reviewBody.trim(),
       });
@@ -640,7 +795,7 @@ app.post("/api/agents/:id/pr-review", async (req, res) => {
     }
 
     if (prInfo.provider === "azuredevops") {
-      const config = getProviderConfig("azuredevops");
+      const config = getProviderConfig("azuredevops", profileId);
       const result = await azureDevOpsApi("POST", config.organization,
         `/${prInfo.project}/_apis/git/repositories/${prInfo.repo}/pullrequests/${prInfo.number}/threads?api-version=7.0`,
         config.token, {
@@ -662,6 +817,7 @@ app.post("/api/agents/:id/pr-review", async (req, res) => {
 app.get("/api/agents/:id/git-status", async (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
+  const profileId = agent.profileId;
 
   const cwd = agent.workingDirectory;
 
@@ -690,10 +846,10 @@ app.get("/api/agents/:id/git-status", async (req, res) => {
   if (branch && branch !== "HEAD" && branch !== "main" && branch !== "master") {
     const remoteUrl = await gitExec(["remote", "get-url", "origin"], cwd);
     if (remoteUrl) {
-      const remote = parseRemoteUrl(remoteUrl);
+      const remote = parseRemoteUrl(remoteUrl, profileId);
       if (remote) {
         try {
-          pr = await fetchPrInfo(remote, branch);
+          pr = await fetchPrInfo(remote, branch, profileId);
         } catch {}
       }
     }
@@ -768,14 +924,18 @@ app.patch("/api/agents/:id/settings", (req, res) => {
   res.json({ interactiveQuestions: agent.interactiveQuestions });
 });
 
-// Git config endpoints
-app.get("/api/git-config", async (_req, res) => {
+// Git config endpoints (profile-scoped)
+app.get("/api/git-config", async (req, res) => {
+  const profileId = req.profile?.id || null;
+  const gitDir = getGitDir(profileId);
+  const gitconfigPath = path.join(gitDir, "gitconfig");
+
   const [name, email] = await Promise.all([
-    gitExec(["config", "--global", "--get", "user.name"], "/"),
-    gitExec(["config", "--global", "--get", "user.email"], "/"),
+    gitExec(["config", "--file", gitconfigPath, "--get", "user.name"], "/"),
+    gitExec(["config", "--file", gitconfigPath, "--get", "user.email"], "/"),
   ]);
 
-  const providers = readProviders();
+  const providers = readProviders(profileId);
   const gh = providers.github || {};
   const gl = providers.gitlab || {};
   const az = providers.azuredevops || {};
@@ -793,21 +953,30 @@ app.get("/api/git-config", async (_req, res) => {
 });
 
 app.post("/api/git-config", async (req, res) => {
+  const profileId = req.profile?.id || null;
+  const gitDir = getGitDir(profileId);
+  const gitconfigPath = path.join(gitDir, "gitconfig");
   const { name, email, token, githubToken, gitlabToken, gitlabUrl, azuredevopsToken, azuredevopsOrg } = req.body;
+
+  // Ensure gitconfig file exists
+  fs.mkdirSync(gitDir, { recursive: true });
+  if (!fs.existsSync(gitconfigPath)) {
+    fs.writeFileSync(gitconfigPath, "", { mode: 0o600 });
+  }
 
   if (name !== undefined) {
     await new Promise((resolve) =>
-      execFile("git", ["config", "--global", "user.name", name], resolve)
+      execFile("git", ["config", "--file", gitconfigPath, "user.name", name], resolve)
     );
   }
   if (email !== undefined) {
     await new Promise((resolve) =>
-      execFile("git", ["config", "--global", "user.email", email], resolve)
+      execFile("git", ["config", "--file", gitconfigPath, "user.email", email], resolve)
     );
   }
 
   // Update provider tokens
-  const providers = readProviders();
+  const providers = readProviders(profileId);
 
   // Backward compat: `token` maps to GitHub
   const ghToken = githubToken || token;
@@ -827,13 +996,13 @@ app.post("/api/git-config", async (req, res) => {
     providers.azuredevops = { ...providers.azuredevops, organization: azuredevopsOrg.trim() };
   }
 
-  writeProviders(providers);
-  syncGitCredentials();
+  writeProviders(providers, profileId);
+  syncGitCredentials(profileId);
 
   // Return updated state
   const [updatedName, updatedEmail] = await Promise.all([
-    gitExec(["config", "--global", "--get", "user.name"], "/"),
-    gitExec(["config", "--global", "--get", "user.email"], "/"),
+    gitExec(["config", "--file", gitconfigPath, "--get", "user.name"], "/"),
+    gitExec(["config", "--file", gitconfigPath, "--get", "user.email"], "/"),
   ]);
 
   const gh = providers.github || {};
@@ -863,11 +1032,23 @@ const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
   // Parse session from the upgrade request
   sessionMiddleware(request, {}, () => {
-    if (AUTH_PASSWORD && !request.session?.authenticated) {
+    const hasProfiles = profilesExist();
+
+    // Open mode: no auth needed
+    if (!AUTH_PASSWORD && !hasProfiles) {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit("connection", ws, request);
+      });
+      return;
+    }
+
+    // Profile or legacy auth required
+    if (!request.session?.authenticated) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
     }
+
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit("connection", ws, request);
     });

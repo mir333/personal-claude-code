@@ -6,12 +6,13 @@ import { recordUsage } from "./usage.js";
 
 const agents = new Map();
 
-export function createAgent(name, workingDirectory) {
+export function createAgent(name, workingDirectory, profileId) {
   const id = uuidv4();
   const agent = {
     id,
     name,
     workingDirectory,
+    profileId: profileId || null,
     status: "idle",
     history: [],
     sessionId: null,
@@ -31,13 +32,18 @@ export function getAgent(id) {
   return agents.get(id);
 }
 
-export function listAgents() {
-  return Array.from(agents.values()).map(({ id, name, workingDirectory, status, interactiveQuestions }) => ({
+export function listAgents(profileId) {
+  let all = Array.from(agents.values());
+  if (profileId) {
+    all = all.filter((a) => a.profileId === profileId);
+  }
+  return all.map(({ id, name, workingDirectory, status, interactiveQuestions, profileId: pid }) => ({
     id,
     name,
     workingDirectory,
     status,
     interactiveQuestions,
+    profileId: pid,
   }));
 }
 
@@ -296,7 +302,7 @@ export async function sendMessage(id, text) {
           numTurns: message.num_turns || 0,
           durationMs: message.duration_ms || 0,
         };
-        recordUsage(doneEvent);
+        recordUsage(doneEvent, agent.profileId);
 
         // Persist request stats as a conversation entry
         appendEntry(agent.workingDirectory, {
