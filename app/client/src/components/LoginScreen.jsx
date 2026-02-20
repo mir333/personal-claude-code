@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, Plus, User, Loader2, Eye, EyeOff, Sparkles } from "lucide-react";
+import { ArrowLeft, Plus, User, Loader2, Eye, EyeOff, Sparkles, ShieldCheck } from "lucide-react";
 
 function slugify(name) {
   return name
@@ -183,8 +183,65 @@ function ProfileLogin({ profile, onBack, onSuccess }) {
   );
 }
 
+// --- Mode: Auth Password Gate (before creating a profile) ---
+function AuthPasswordGate({ onBack, onVerified, isFirst }) {
+  const [authPassword, setAuthPassword] = useState("");
+  const [error, setError] = useState("");
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!authPassword) return;
+    setError("");
+    // Store the auth password and proceed to the profile form
+    onVerified(authPassword);
+  }
+
+  return (
+    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+      {!isFirst && onBack && (
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to profiles
+        </button>
+      )}
+
+      <div className="text-center mb-8">
+        <div className="inline-flex items-center justify-center h-14 w-14 rounded-2xl bg-primary/10 border border-primary/20 mb-4">
+          <ShieldCheck className="h-7 w-7 text-primary" />
+        </div>
+        <h2 className="text-xl font-bold">Admin Authorization</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Enter the admin password to create a new profile
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <Input
+          type="password"
+          value={authPassword}
+          onChange={(e) => setAuthPassword(e.target.value)}
+          placeholder="Admin password"
+          autoFocus
+          className="h-11 bg-background/50 border-border/50 focus:border-primary/50"
+        />
+        {error && (
+          <p className="text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2">
+            {error}
+          </p>
+        )}
+        <Button type="submit" className="w-full h-11 font-medium" disabled={!authPassword}>
+          Continue
+        </Button>
+      </form>
+    </div>
+  );
+}
+
 // --- Mode: Create Profile ---
-function CreateProfile({ onBack, onSuccess, isFirst }) {
+function CreateProfile({ onBack, onSuccess, isFirst, authPassword }) {
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -205,7 +262,7 @@ function CreateProfile({ onBack, onSuccess, isFirst }) {
       const res = await fetch("/api/profiles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), password }),
+        body: JSON.stringify({ name: name.trim(), password, authPassword }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -222,13 +279,13 @@ function CreateProfile({ onBack, onSuccess, isFirst }) {
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-      {!isFirst && (
+      {!isFirst && onBack && (
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to profiles
+          Back
         </button>
       )}
 
@@ -324,79 +381,14 @@ function CreateProfile({ onBack, onSuccess, isFirst }) {
   );
 }
 
-// --- Mode: Legacy Password (AUTH_PASSWORD mode, no profiles) ---
-function LegacyLogin({ onSuccess }) {
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      if (res.ok) {
-        onSuccess(null);
-      } else {
-        const data = await res.json();
-        setError(data.error || "Login failed");
-      }
-    } catch {
-      setError("Connection error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="text-center mb-8">
-        <div className="inline-flex items-center justify-center h-14 w-14 rounded-2xl bg-primary/10 border border-primary/20 mb-4">
-          <Sparkles className="h-7 w-7 text-primary" />
-        </div>
-        <h1 className="text-2xl font-bold text-foreground tracking-tight">Claude Web UI</h1>
-        <p className="text-sm text-muted-foreground mt-1">Enter password to continue</p>
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <Input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
-          autoFocus
-          className="h-11 bg-background/50 border-border/50 focus:border-primary/50"
-        />
-        {error && (
-          <p className="text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2">
-            {error}
-          </p>
-        )}
-        <Button type="submit" className="w-full h-11 font-medium" disabled={loading || !password}>
-          {loading ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Signing in...
-            </>
-          ) : (
-            "Sign In"
-          )}
-        </Button>
-      </form>
-    </div>
-  );
-}
-
 // --- Main LoginScreen ---
 export default function LoginScreen({ onSuccess }) {
-  const [mode, setMode] = useState("loading"); // loading | select | login | create | legacy
+  // Modes: loading | select | login | auth-gate | create
+  const [mode, setMode] = useState("loading");
   const [profiles, setProfiles] = useState([]);
   const [selectedProfile, setSelectedProfile] = useState(null);
+  const [requiresAuthPassword, setRequiresAuthPassword] = useState(false);
+  const [authPassword, setAuthPassword] = useState("");
 
   useEffect(() => {
     // Check current auth state + load profiles
@@ -410,37 +402,16 @@ export default function LoginScreen({ onSuccess }) {
           return;
         }
         setProfiles(profileList || []);
-        if (authData.hasProfiles && profileList?.length > 0) {
+        setRequiresAuthPassword(!!authData.requiresAuthPassword);
+
+        if (profileList?.length > 0) {
+          // Profiles exist — show selector
           setMode("select");
-        } else if (!authData.hasProfiles && !authData.authenticated) {
-          // No profiles exist — check if AUTH_PASSWORD is set by trying an empty login
-          // If hasProfiles is false and not authenticated, either it's open mode or AUTH_PASSWORD
-          // The auth/check endpoint tells us
-          if (authData.hasProfiles === false && profileList?.length === 0) {
-            // Could be legacy password mode or first-time setup
-            // Try to see if we need a password
-            fetch("/api/auth/login", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ password: "" }),
-            })
-              .then((r) => {
-                if (r.ok) {
-                  // No password needed (open mode) — shouldn't reach here since auth/check returned not authenticated
-                  onSuccess(null);
-                } else {
-                  // AUTH_PASSWORD is set — show legacy login
-                  setMode("legacy");
-                }
-              })
-              .catch(() => {
-                // Default to creating first profile
-                setMode("create");
-              });
-          } else {
-            setMode("create");
-          }
+        } else if (authData.requiresAuthPassword) {
+          // No profiles, AUTH_PASSWORD is set — show auth gate first
+          setMode("auth-gate");
         } else {
+          // No profiles, no AUTH_PASSWORD — go straight to create
           setMode("create");
         }
       })
@@ -450,6 +421,19 @@ export default function LoginScreen({ onSuccess }) {
   function handleSelectProfile(profile) {
     setSelectedProfile(profile);
     setMode("login");
+  }
+
+  function handleCreateNew() {
+    if (requiresAuthPassword) {
+      setMode("auth-gate");
+    } else {
+      setMode("create");
+    }
+  }
+
+  function handleAuthVerified(password) {
+    setAuthPassword(password);
+    setMode("create");
   }
 
   function handleProfileCreated(profile) {
@@ -482,7 +466,7 @@ export default function LoginScreen({ onSuccess }) {
             <ProfileSelector
               profiles={profiles}
               onSelectProfile={handleSelectProfile}
-              onCreateNew={() => setMode("create")}
+              onCreateNew={handleCreateNew}
             />
           )}
           {mode === "login" && selectedProfile && (
@@ -492,14 +476,27 @@ export default function LoginScreen({ onSuccess }) {
               onSuccess={handleLoginSuccess}
             />
           )}
-          {mode === "create" && (
-            <CreateProfile
+          {mode === "auth-gate" && (
+            <AuthPasswordGate
               onBack={profiles.length > 0 ? () => setMode("select") : null}
-              onSuccess={handleProfileCreated}
+              onVerified={handleAuthVerified}
               isFirst={profiles.length === 0}
             />
           )}
-          {mode === "legacy" && <LegacyLogin onSuccess={handleLoginSuccess} />}
+          {mode === "create" && (
+            <CreateProfile
+              onBack={
+                requiresAuthPassword
+                  ? () => setMode("auth-gate")
+                  : profiles.length > 0
+                    ? () => setMode("select")
+                    : null
+              }
+              onSuccess={handleProfileCreated}
+              isFirst={profiles.length === 0}
+              authPassword={authPassword}
+            />
+          )}
         </div>
 
         <p className="text-center text-[11px] text-muted-foreground/50 mt-6">

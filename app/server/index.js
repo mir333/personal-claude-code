@@ -87,7 +87,11 @@ app.get("/api/profiles", (_req, res) => {
 });
 
 app.post("/api/profiles", (req, res) => {
-  const { name, password } = req.body;
+  const { name, password, authPassword } = req.body;
+  // AUTH_PASSWORD is required as a gate for creating profiles
+  if (AUTH_PASSWORD && authPassword !== AUTH_PASSWORD) {
+    return res.status(403).json({ error: "Invalid admin password" });
+  }
   try {
     const profile = createProfile(name, password);
     // Auto-login
@@ -120,15 +124,8 @@ app.post("/api/auth/login", (req, res) => {
     return res.json({ authenticated: true, profile: { id: profile.id, name: profile.name, slug: profile.slug } });
   }
 
-  // Legacy single-password mode
-  if (!AUTH_PASSWORD) {
-    return res.json({ authenticated: true });
-  }
-  if (req.body.password === AUTH_PASSWORD) {
-    req.session.authenticated = true;
-    return res.json({ authenticated: true });
-  }
-  res.status(401).json({ error: "Wrong password" });
+  // No legacy single-password mode — AUTH_PASSWORD is only used for profile creation
+  res.status(400).json({ error: "Profile login required. Please create a profile first." });
 });
 
 app.post("/api/auth/logout", (req, res) => {
@@ -152,52 +149,26 @@ app.get("/api/auth/check", (req, res) => {
     });
   }
 
-  // Already authenticated in legacy mode (no profiles)
-  if (req.session.authenticated && !hasProfiles) {
-    return res.json({ authenticated: true, profile: null });
-  }
-
-  // Not authenticated — if no password and no profiles, auto-auth (open mode)
-  if (!AUTH_PASSWORD && !hasProfiles) {
-    return res.json({ authenticated: true, profile: null });
-  }
-
-  res.json({ authenticated: false, profile: null, hasProfiles });
+  // Not authenticated — must create or select a profile
+  res.json({
+    authenticated: false,
+    profile: null,
+    hasProfiles,
+    requiresAuthPassword: !!AUTH_PASSWORD,
+  });
 });
 
-// Auth guard middleware
+// Auth guard middleware — all users must authenticate with a profile
 function requireAuth(req, res, next) {
-  const hasProfiles = profilesExist();
-
-  // Open mode: no password, no profiles
-  if (!AUTH_PASSWORD && !hasProfiles) return next();
-
-  // Profile mode: require profile session
-  if (hasProfiles) {
-    if (req.session.authenticated && req.session.profileId) {
-      req.profile = {
-        id: req.session.profileId,
-        name: req.session.profileName,
-        slug: req.session.profileSlug,
-      };
-      return next();
-    }
-    if (req.path.startsWith("/api/")) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    return res.status(401).json({ error: "Unauthorized" });
+  if (req.session.authenticated && req.session.profileId) {
+    req.profile = {
+      id: req.session.profileId,
+      name: req.session.profileName,
+      slug: req.session.profileSlug,
+    };
+    return next();
   }
-
-  // Legacy mode: AUTH_PASSWORD, no profiles
-  if (AUTH_PASSWORD) {
-    if (req.session.authenticated) return next();
-    if (req.path.startsWith("/api/")) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  return next();
+  return res.status(401).json({ error: "Unauthorized" });
 }
 
 // Apply auth guard to all API routes (except auth/profile endpoints above)
@@ -206,7 +177,6 @@ app.use("/api", requireAuth);
 // Serve static frontend — auth guard for HTML pages
 app.use((req, res, next) => {
   const hasProfiles = profilesExist();
-  if (!AUTH_PASSWORD && !hasProfiles) return next();
   if (req.session.authenticated) return next();
   // Allow static assets (JS, CSS, images) so the login page can load
   if (/\.(js|css|png|jpg|jpeg|svg|ico|woff2?|ttf|eot|map)(\?|$)/.test(req.path)) {
@@ -1032,17 +1002,7 @@ const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
   // Parse session from the upgrade request
   sessionMiddleware(request, {}, () => {
-    const hasProfiles = profilesExist();
-
-    // Open mode: no auth needed
-    if (!AUTH_PASSWORD && !hasProfiles) {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit("connection", ws, request);
-      });
-      return;
-    }
-
-    // Profile or legacy auth required
+    // All users must be authenticated with a profile
     if (!request.session?.authenticated) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
