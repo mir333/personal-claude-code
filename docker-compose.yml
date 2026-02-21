@@ -42,6 +42,10 @@ services:
       # Persistent Claude config (from mounts)
       - claude-code-config:/home/node/.claude
 
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
     working_dir: /workspace
 
     ports:
