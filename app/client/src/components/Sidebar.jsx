@@ -158,53 +158,28 @@ function GitStatus({ git, agentId, onBranchChange }) {
   );
 }
 
-function GitSettingsPanel({ onClose }) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [githubToken, setGithubToken] = useState("");
-  const [gitlabToken, setGitlabToken] = useState("");
-  const [gitlabUrl, setGitlabUrl] = useState("https://gitlab.com");
-  const [azuredevopsToken, setAzuredevopsToken] = useState("");
-  const [azuredevopsOrg, setAzuredevopsOrg] = useState("");
-  const [providers, setProviders] = useState({});
+const SETTINGS_TABS = [
+  { id: "user", label: "User" },
+  { id: "github", label: "GitHub" },
+  { id: "gitlab", label: "GitLab" },
+  { id: "azuredevops", label: "Azure DevOps" },
+];
+
+function useSettingsSave(buildBody, onSuccess) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/git-config")
-      .then((r) => r.json())
-      .then((data) => {
-        setName(data.name || "");
-        setEmail(data.email || "");
-        const p = data.providers || {};
-        setProviders(p);
-        setGitlabUrl(p.gitlab?.url || "https://gitlab.com");
-        setAzuredevopsOrg(p.azuredevops?.organization || "");
-      })
-      .catch(() => {});
-  }, []);
 
   async function handleSave() {
     setSaving(true);
     setSaved(false);
     try {
-      const body = { name, email };
-      if (githubToken) body.githubToken = githubToken;
-      if (gitlabToken) body.gitlabToken = gitlabToken;
-      body.gitlabUrl = gitlabUrl;
-      if (azuredevopsToken) body.azuredevopsToken = azuredevopsToken;
-      body.azuredevopsOrg = azuredevopsOrg;
-
       const res = await fetch("/api/git-config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(buildBody()),
       });
       const data = await res.json();
-      setProviders(data.providers || {});
-      setGithubToken("");
-      setGitlabToken("");
-      setAzuredevopsToken("");
+      if (onSuccess) onSuccess(data);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -214,91 +189,208 @@ function GitSettingsPanel({ onClose }) {
     }
   }
 
+  return { saving, saved, handleSave };
+}
+
+function SaveButton({ saving, saved, onClick }) {
+  return (
+    <Button variant="outline" size="sm" className="w-full" onClick={onClick} disabled={saving}>
+      {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+      {saved ? "Saved!" : "Save"}
+    </Button>
+  );
+}
+
+function UserTab({ name, setName, email, setEmail }) {
+  const { saving, saved, handleSave } = useSettingsSave(() => ({ name, email }));
+  const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <label className="text-xs text-muted-foreground">User Name</label>
+        <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} placeholder="Your Name" />
+      </div>
+      <div>
+        <label className="text-xs text-muted-foreground">Email</label>
+        <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} placeholder="you@example.com" />
+      </div>
+      <SaveButton saving={saving} saved={saved} onClick={handleSave} />
+    </div>
+  );
+}
+
+function GitHubTab({ providers }) {
+  const [token, setToken] = useState("");
+  const [hasToken, setHasToken] = useState(providers.github?.hasToken || false);
+  const { saving, saved, handleSave } = useSettingsSave(
+    () => ({ githubToken: token }),
+    (data) => { setToken(""); setHasToken(data.providers?.github?.hasToken || false); }
+  );
   const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
   const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
   const linkClass = "underline hover:text-foreground";
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <label className="text-xs text-muted-foreground">Token (PAT)</label>
+        <input type="password" value={token} onChange={(e) => setToken(e.target.value)} className={inputClass}
+          placeholder={hasToken ? "Token configured \u2713" : "Not set"} />
+        <p className={hintClass}>
+          Generate at{" "}
+          <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
+            github.com/settings/tokens
+          </a>
+          . Select "Classic" token with <b>repo</b> scope.
+        </p>
+      </div>
+      <SaveButton saving={saving} saved={saved} onClick={handleSave} />
+    </div>
+  );
+}
+
+function GitLabTab({ providers }) {
+  const [token, setToken] = useState("");
+  const [url, setUrl] = useState(providers.gitlab?.url || "https://gitlab.com");
+  const [hasToken, setHasToken] = useState(providers.gitlab?.hasToken || false);
+  const { saving, saved, handleSave } = useSettingsSave(
+    () => {
+      const body = { gitlabUrl: url };
+      if (token) body.gitlabToken = token;
+      return body;
+    },
+    (data) => { setToken(""); setHasToken(data.providers?.gitlab?.hasToken || false); }
+  );
+  const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
+  const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
+  const linkClass = "underline hover:text-foreground";
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <label className="text-xs text-muted-foreground">Token (PAT)</label>
+        <input type="password" value={token} onChange={(e) => setToken(e.target.value)} className={inputClass}
+          placeholder={hasToken ? "Token configured \u2713" : "Not set"} />
+        <p className={hintClass}>
+          Generate at{" "}
+          <a href="https://gitlab.com/-/user_settings/personal_access_tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
+            GitLab &gt; Settings &gt; Access Tokens
+          </a>
+          . Select scopes: <b>api</b>, <b>read_repository</b>, <b>write_repository</b>.
+        </p>
+      </div>
+      <div>
+        <label className="text-xs text-muted-foreground">URL</label>
+        <input type="text" value={url} onChange={(e) => setUrl(e.target.value)} className={inputClass}
+          placeholder="https://gitlab.com" />
+        <p className={hintClass}>Change for self-hosted GitLab instances.</p>
+      </div>
+      <SaveButton saving={saving} saved={saved} onClick={handleSave} />
+    </div>
+  );
+}
+
+function AzureDevOpsTab({ providers }) {
+  const [token, setToken] = useState("");
+  const [org, setOrg] = useState(providers.azuredevops?.organization || "");
+  const [hasToken, setHasToken] = useState(providers.azuredevops?.hasToken || false);
+  const { saving, saved, handleSave } = useSettingsSave(
+    () => {
+      const body = { azuredevopsOrg: org };
+      if (token) body.azuredevopsToken = token;
+      return body;
+    },
+    (data) => { setToken(""); setHasToken(data.providers?.azuredevops?.hasToken || false); }
+  );
+  const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
+  const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
+  const linkClass = "underline hover:text-foreground";
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <label className="text-xs text-muted-foreground">Token (PAT)</label>
+        <input type="password" value={token} onChange={(e) => setToken(e.target.value)} className={inputClass}
+          placeholder={hasToken ? "Token configured \u2713" : "Not set"} />
+        <p className={hintClass}>
+          Generate at{" "}
+          <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" className={linkClass}>
+            dev.azure.com
+          </a>
+          {" "}&gt; User Settings &gt; Personal Access Tokens. Select scope: <b>Code (Read &amp; Write)</b>.
+        </p>
+      </div>
+      <div>
+        <label className="text-xs text-muted-foreground">Organization</label>
+        <input type="text" value={org} onChange={(e) => setOrg(e.target.value)} className={inputClass}
+          placeholder="my-org" />
+        <p className={hintClass}>Your Azure DevOps organization name from the URL: dev.azure.com/<b>org-name</b></p>
+      </div>
+      <SaveButton saving={saving} saved={saved} onClick={handleSave} />
+    </div>
+  );
+}
+
+function GitSettingsPanel({ onClose }) {
+  const [activeTab, setActiveTab] = useState("user");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [providers, setProviders] = useState({});
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/git-config")
+      .then((r) => r.json())
+      .then((data) => {
+        setName(data.name || "");
+        setEmail(data.email || "");
+        setProviders(data.providers || {});
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, []);
 
   return (
     <div className="p-5 space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Settings className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Git Settings</h2>
+          <h2 className="text-sm font-semibold">Settings</h2>
         </div>
         <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-sm leading-none">✕</button>
       </div>
-      <div className="space-y-2">
-        <div>
-          <label className="text-xs text-muted-foreground">User Name</label>
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} placeholder="Your Name" />
-        </div>
-        <div>
-          <label className="text-xs text-muted-foreground">Email</label>
-          <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} placeholder="you@example.com" />
-        </div>
 
-        <Separator className="my-2" />
-        <p className="text-xs font-semibold text-muted-foreground">GitHub</p>
-        <div>
-          <label className="text-xs text-muted-foreground">Token (PAT)</label>
-          <input type="password" value={githubToken} onChange={(e) => setGithubToken(e.target.value)} className={inputClass}
-            placeholder={providers.github?.hasToken ? "Token configured ✓" : "Not set"} />
-          <p className={hintClass}>
-            Generate at{" "}
-            <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
-              github.com/settings/tokens
-            </a>
-            . Select "Classic" token with <b>repo</b> scope.
-          </p>
-        </div>
-
-        <Separator className="my-2" />
-        <p className="text-xs font-semibold text-muted-foreground">GitLab</p>
-        <div>
-          <label className="text-xs text-muted-foreground">Token (PAT)</label>
-          <input type="password" value={gitlabToken} onChange={(e) => setGitlabToken(e.target.value)} className={inputClass}
-            placeholder={providers.gitlab?.hasToken ? "Token configured ✓" : "Not set"} />
-          <p className={hintClass}>
-            Generate at{" "}
-            <a href="https://gitlab.com/-/user_settings/personal_access_tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
-              GitLab &gt; Settings &gt; Access Tokens
-            </a>
-            . Select scopes: <b>api</b>, <b>read_repository</b>, <b>write_repository</b>.
-          </p>
-        </div>
-        <div>
-          <label className="text-xs text-muted-foreground">URL</label>
-          <input type="text" value={gitlabUrl} onChange={(e) => setGitlabUrl(e.target.value)} className={inputClass}
-            placeholder="https://gitlab.com" />
-          <p className={hintClass}>Change for self-hosted GitLab instances.</p>
-        </div>
-
-        <Separator className="my-2" />
-        <p className="text-xs font-semibold text-muted-foreground">Azure DevOps</p>
-        <div>
-          <label className="text-xs text-muted-foreground">Token (PAT)</label>
-          <input type="password" value={azuredevopsToken} onChange={(e) => setAzuredevopsToken(e.target.value)} className={inputClass}
-            placeholder={providers.azuredevops?.hasToken ? "Token configured ✓" : "Not set"} />
-          <p className={hintClass}>
-            Generate at{" "}
-            <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" className={linkClass}>
-              dev.azure.com
-            </a>
-            {" "}&gt; User Settings &gt; Personal Access Tokens. Select scope: <b>Code (Read &amp; Write)</b>.
-          </p>
-        </div>
-        <div>
-          <label className="text-xs text-muted-foreground">Organization</label>
-          <input type="text" value={azuredevopsOrg} onChange={(e) => setAzuredevopsOrg(e.target.value)} className={inputClass}
-            placeholder="my-org" />
-          <p className={hintClass}>Your Azure DevOps organization name from the URL: dev.azure.com/<b>org-name</b></p>
-        </div>
-
-        <Button variant="outline" size="sm" className="w-full" onClick={handleSave} disabled={saving}>
-          {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-          {saved ? "Saved!" : "Save"}
-        </Button>
+      <div className="flex gap-1 border-b border-border">
+        {SETTINGS_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={cn(
+              "px-3 py-1.5 text-xs font-medium transition-colors rounded-t-md -mb-px",
+              activeTab === tab.id
+                ? "border border-border border-b-transparent bg-background text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
+
+      {!loaded ? (
+        <div className="flex items-center justify-center py-6 text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+          <span className="text-sm">Loading...</span>
+        </div>
+      ) : (
+        <>
+          {activeTab === "user" && <UserTab name={name} setName={setName} email={email} setEmail={setEmail} />}
+          {activeTab === "github" && <GitHubTab providers={providers} />}
+          {activeTab === "gitlab" && <GitLabTab providers={providers} />}
+          {activeTab === "azuredevops" && <AzureDevOpsTab providers={providers} />}
+        </>
+      )}
     </div>
   );
 }
