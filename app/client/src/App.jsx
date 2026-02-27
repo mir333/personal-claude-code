@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff } from "lucide-react";
+import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -26,6 +26,7 @@ export default function App() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [interactiveQuestions, setInteractiveQuestions] = useState({});
   const [pendingQuestions, setPendingQuestions] = useState({});
+  const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
   const terminalDataRef = useRef(null);
   const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
@@ -239,9 +240,10 @@ export default function App() {
       sugg = ["Continue", "Summarize changes", "Commit changes", "Push code"];
       if (hasPR) {
         sugg.push(`Review ${prLabel}`);
-        // Check if the last assistant response looks like a review
-        const lastAssistant = [...conv].reverse().find((m) => m.type === "assistant_stream");
-        if (lastAssistant && lastAssistant.text.length > 100) {
+        // Check if assistant responses look like a review (consider all messages)
+        const assistantMsgs = conv.filter((m) => m.type === "assistant_stream");
+        const totalLen = assistantMsgs.reduce((sum, m) => sum + m.text.length, 0);
+        if (assistantMsgs.length > 0 && totalLen > 100) {
           acts.push({ label: `Post review to ${prLabel}`, action: "post-pr-review" });
         }
       }
@@ -423,16 +425,21 @@ export default function App() {
 
   async function handlePostReview() {
     if (!selectedAgentId) return;
-    // Find the last assistant message to use as review body
+    // Collect all assistant messages from the current session (after last context_cleared)
     const conv = selectedConversation;
-    const lastAssistant = [...conv].reverse().find((m) => m.type === "assistant_stream");
-    if (!lastAssistant) return;
+    let startIdx = 0;
+    for (let i = conv.length - 1; i >= 0; i--) {
+      if (conv[i].type === "context_cleared") { startIdx = i + 1; break; }
+    }
+    const assistantMessages = conv.slice(startIdx).filter((m) => m.type === "assistant_stream");
+    if (assistantMessages.length === 0) return;
+    const reviewBody = assistantMessages.map((m) => m.text).join("\n\n---\n\n");
 
     try {
       const res = await fetch(`/api/agents/${selectedAgentId}/pr-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: lastAssistant.text }),
+        body: JSON.stringify({ body: reviewBody }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -568,7 +575,18 @@ export default function App() {
                           </div>
                         )}
                         {msg.type === "assistant_stream" && (
-                          <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2">
+                          <div className="group/msg relative max-w-2xl bg-card border border-border rounded-lg px-4 py-2">
+                            <button
+                              className="absolute top-1.5 right-1.5 opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                              title="Copy markdown"
+                              onClick={() => {
+                                navigator.clipboard.writeText(msg.text);
+                                setCopiedMsgIdx(gi);
+                                setTimeout(() => setCopiedMsgIdx(null), 1500);
+                              }}
+                            >
+                              {copiedMsgIdx === gi ? <CopyCheck className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                            </button>
                             <Markdown>{msg.text}</Markdown>
                           </div>
                         )}
