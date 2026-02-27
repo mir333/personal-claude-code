@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
@@ -167,6 +167,28 @@ export default function App() {
   };
 
   const selectedConversation = conversations[selectedAgentId] || [];
+
+  // Group consecutive tool_call messages (excluding AskUserQuestion) for grid rendering
+  const groupedConversation = useMemo(() => {
+    const groups = [];
+    let toolGroup = null;
+    for (const msg of selectedConversation) {
+      const isToolTile = msg.type === "tool_call" && msg.tool !== "AskUserQuestion";
+      if (isToolTile) {
+        if (!toolGroup) {
+          toolGroup = { type: "tool_group", msgs: [] };
+          groups.push(toolGroup);
+        }
+        toolGroup.msgs.push(msg);
+      } else {
+        toolGroup = null;
+        // skip tool_result entries (they are looked up by toolUseId)
+        if (msg.type === "tool_result") continue;
+        groups.push({ type: "single", msg });
+      }
+    }
+    return groups;
+  }, [selectedConversation]);
 
   // Derive context window info from the last stats entry after the most recent context_cleared
   const contextInfo = (() => {
@@ -479,72 +501,82 @@ export default function App() {
             {!terminalOpen && (
               <div className="flex flex-col min-h-0 flex-1">
                 <ScrollArea className="flex-1 p-4">
-                  {selectedConversation.map((msg, i) => (
-                    <div key={i} className="mb-2 text-sm">
-                      {msg.type === "user" && (
-                        <div className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
-                          {msg.text}
+                  {groupedConversation.map((group, gi) => {
+                    if (group.type === "tool_group") {
+                      return (
+                        <div key={`tg-${gi}`} className="grid grid-cols-2 md:grid-cols-3 gap-2 my-1 text-sm">
+                          {group.msgs.map((msg, ti) => (
+                            <ToolCallCard
+                              key={ti}
+                              tool={msg.tool}
+                              input={msg.input}
+                              output={selectedConversation.find(
+                                (m) => m.type === "tool_result" && m.toolUseId === msg.toolUseId
+                              )?.output}
+                            />
+                          ))}
                         </div>
-                      )}
-                      {msg.type === "assistant_stream" && (
-                        <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2">
-                          <Markdown>{msg.text}</Markdown>
-                        </div>
-                      )}
-                      {msg.type === "tool_call" && msg.tool === "AskUserQuestion" ? (
-                        <QuestionCard
-                          input={msg.input}
-                          output={selectedConversation.find(
-                            (m) => m.type === "tool_result" && m.toolUseId === msg.toolUseId
-                          )?.output}
-                          interactive={pendingQuestions[selectedAgentId]?.toolUseId === msg.toolUseId}
-                          onAnswer={({ answers }) => handleAnswerQuestion(selectedAgentId, answers)}
-                        />
-                      ) : msg.type === "tool_call" && (
-                        <ToolCallCard
-                          tool={msg.tool}
-                          input={msg.input}
-                          output={selectedConversation.find(
-                            (m) => m.type === "tool_result" && m.toolUseId === msg.toolUseId
-                          )?.output}
-                        />
-                      )}
-                      {msg.type === "tool_result" && null}
-                      {msg.type === "stats" && (
-                        <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground py-1.5 px-2">
-                          {msg.cost != null && <span>${msg.cost < 0.01 ? msg.cost.toFixed(4) : msg.cost.toFixed(2)}</span>}
-                          {msg.usage && <span>{((msg.usage.input_tokens || 0) / 1000).toFixed(1)}k in</span>}
-                          {msg.usage && <span>{((msg.usage.output_tokens || 0) / 1000).toFixed(1)}k out</span>}
-                          {msg.numTurns > 0 && <span>{msg.numTurns} {msg.numTurns === 1 ? "turn" : "turns"}</span>}
-                          {msg.durationMs > 0 && <span>{(msg.durationMs / 1000).toFixed(1)}s</span>}
-                          {msg.modelUsage && Object.entries(msg.modelUsage).map(([model, mu]) => {
-                            const cost = mu.costUSD || 0;
-                            const inTok = mu.inputTokens || 0;
-                            const outTok = mu.outputTokens || 0;
-                            return (
-                              <span key={model} className="inline-flex items-center gap-1 rounded-md bg-muted/50 border border-border px-1.5 py-0.5">
-                                <span className="font-medium text-foreground/70">{model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}</span>
-                                <span>${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}</span>
-                                <span className="text-muted-foreground/60">{(inTok / 1000).toFixed(1)}k/{(outTok / 1000).toFixed(1)}k</span>
-                              </span>
-                            );
-                          })}
-                        </div>
-                      )}
-                      {msg.type === "context_cleared" && (
-                        <div className="flex items-center gap-3 my-3">
-                          <div className="flex-1 border-t border-dashed border-yellow-500/50" />
-                          <span className="text-xs text-yellow-500 font-medium whitespace-nowrap">Context cleared</span>
-                          <div className="flex-1 border-t border-dashed border-yellow-500/50" />
-                        </div>
-                      )}
-                      {msg.type === "error" && (
-                        <div className="max-w-2xl bg-destructive/20 text-destructive rounded-lg px-4 py-2">
-                          {msg.message}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                      );
+                    }
+                    const msg = group.msg;
+                    return (
+                      <div key={gi} className="mb-2 text-sm">
+                        {msg.type === "user" && (
+                          <div className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
+                            {msg.text}
+                          </div>
+                        )}
+                        {msg.type === "assistant_stream" && (
+                          <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2">
+                            <Markdown>{msg.text}</Markdown>
+                          </div>
+                        )}
+                        {msg.type === "tool_call" && msg.tool === "AskUserQuestion" && (
+                          <QuestionCard
+                            input={msg.input}
+                            output={selectedConversation.find(
+                              (m) => m.type === "tool_result" && m.toolUseId === msg.toolUseId
+                            )?.output}
+                            interactive={pendingQuestions[selectedAgentId]?.toolUseId === msg.toolUseId}
+                            onAnswer={({ answers }) => handleAnswerQuestion(selectedAgentId, answers)}
+                          />
+                        )}
+                        {msg.type === "stats" && (
+                          <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground py-1.5 px-2">
+                            {msg.cost != null && <span>${msg.cost < 0.01 ? msg.cost.toFixed(4) : msg.cost.toFixed(2)}</span>}
+                            {msg.usage && <span>{((msg.usage.input_tokens || 0) / 1000).toFixed(1)}k in</span>}
+                            {msg.usage && <span>{((msg.usage.output_tokens || 0) / 1000).toFixed(1)}k out</span>}
+                            {msg.numTurns > 0 && <span>{msg.numTurns} {msg.numTurns === 1 ? "turn" : "turns"}</span>}
+                            {msg.durationMs > 0 && <span>{(msg.durationMs / 1000).toFixed(1)}s</span>}
+                            {msg.modelUsage && Object.entries(msg.modelUsage).map(([model, mu]) => {
+                              const cost = mu.costUSD || 0;
+                              const inTok = mu.inputTokens || 0;
+                              const outTok = mu.outputTokens || 0;
+                              return (
+                                <span key={model} className="inline-flex items-center gap-1 rounded-md bg-muted/50 border border-border px-1.5 py-0.5">
+                                  <span className="font-medium text-foreground/70">{model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}</span>
+                                  <span>${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}</span>
+                                  <span className="text-muted-foreground/60">{(inTok / 1000).toFixed(1)}k/{(outTok / 1000).toFixed(1)}k</span>
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {msg.type === "context_cleared" && (
+                          <div className="flex items-center gap-3 my-3">
+                            <div className="flex-1 border-t border-dashed border-yellow-500/50" />
+                            <span className="text-xs text-yellow-500 font-medium whitespace-nowrap">Context cleared</span>
+                            <div className="flex-1 border-t border-dashed border-yellow-500/50" />
+                          </div>
+                        )}
+                        {msg.type === "error" && (
+                          <div className="max-w-2xl bg-destructive/20 text-destructive rounded-lg px-4 py-2">
+                            {msg.message}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                   <div ref={messagesEndRef} />
                 </ScrollArea>
                 <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
