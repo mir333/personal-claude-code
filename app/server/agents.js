@@ -18,7 +18,7 @@ export function createAgent(name, workingDirectory, profileId) {
     sessionId: null,
     abortController: null,
     textBuffer: "",
-    interactiveQuestions: false,
+    interactiveQuestions: true,
     pendingQuestion: null,
     listeners: new Set(),      // Set of callback functions
     eventBuffer: [],           // Array of { index, event } for reconnect backfill
@@ -188,9 +188,13 @@ export async function sendMessage(id, text) {
             // Wait for user's answer via Promise
             const answer = await new Promise((resolve, reject) => {
               agent.pendingQuestion = { resolve, reject };
+              agent._pendingQuestionInput = hookInput.tool_input;
+              agent._pendingQuestionToolUseId = toolUseId;
               signal.addEventListener("abort", () => reject(new Error("Aborted")));
             });
             agent.pendingQuestion = null;
+            agent._pendingQuestionInput = null;
+            agent._pendingQuestionToolUseId = null;
 
             // Block the tool with user's answer in the reason
             return {
@@ -327,6 +331,8 @@ export async function sendMessage(id, text) {
   } finally {
     agent.abortController = null;
     agent.pendingQuestion = null;
+    agent._pendingQuestionInput = null;
+    agent._pendingQuestionToolUseId = null;
     if (agent.status === "busy") agent.status = "idle";
   }
 }

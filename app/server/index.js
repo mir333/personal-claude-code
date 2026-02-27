@@ -578,8 +578,11 @@ app.get("/api/agents", (req, res) => {
 app.get("/api/agents/:id", (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
-  const { id, name, workingDirectory, status } = agent;
-  res.json({ id, name, workingDirectory, status });
+  const { id, name, workingDirectory, status, interactiveQuestions } = agent;
+  const pendingQuestion = agent.pendingQuestion
+    ? { input: agent._pendingQuestionInput, toolUseId: agent._pendingQuestionToolUseId }
+    : null;
+  res.json({ id, name, workingDirectory, status, interactiveQuestions, pendingQuestion });
 });
 
 app.delete("/api/agents/:id", (req, res) => {

@@ -276,7 +276,19 @@ export default function App() {
 
   useEffect(() => {
     if (!authenticated) return;
-    fetchAgents();
+    fetchAgents().then(() => {
+      // Sync interactiveQuestions state from server
+      fetch("/api/agents")
+        .then((r) => r.json())
+        .then((list) => {
+          const iq = {};
+          for (const a of list) {
+            iq[a.id] = !!a.interactiveQuestions;
+          }
+          setInteractiveQuestions((prev) => ({ ...prev, ...iq }));
+        })
+        .catch(() => {});
+    });
     fetchDirectories();
   }, [authenticated, fetchAgents, fetchDirectories]);
 
@@ -292,6 +304,21 @@ export default function App() {
             if (prev[selectedAgentId]?.length) return prev;
             return { ...prev, [selectedAgentId]: entries };
           });
+        }
+      })
+      .catch(() => {});
+    // Recover pending question state from server (e.g. after page reload)
+    fetch(`/api/agents/${selectedAgentId}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.pendingQuestion) {
+          setPendingQuestions((prev) => ({
+            ...prev,
+            [selectedAgentId]: { input: data.pendingQuestion.input, toolUseId: data.pendingQuestion.toolUseId },
+          }));
+        }
+        if (data?.interactiveQuestions !== undefined) {
+          setInteractiveQuestions((prev) => ({ ...prev, [selectedAgentId]: !!data.interactiveQuestions }));
         }
       })
       .catch(() => {});
