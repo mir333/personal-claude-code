@@ -168,22 +168,36 @@ export default function App() {
 
   const selectedConversation = conversations[selectedAgentId] || [];
 
-  // Group consecutive tool_call messages (excluding AskUserQuestion) for grid rendering
+  // Group tool_call messages (excluding AskUserQuestion) into grids.
+  // tool_result entries between tool calls are skipped (looked up by toolUseId).
+  // assistant_stream entries between tool calls close the current grid, render
+  // as a text bubble, then a new grid is started for subsequent tool calls –
+  // keeping them visually compact while preserving correct message order.
   const groupedConversation = useMemo(() => {
     const groups = [];
     let toolGroup = null;
+    let inToolRun = false; // true while we're in a sequence of tool calls
     for (const msg of selectedConversation) {
       const isToolTile = msg.type === "tool_call" && msg.tool !== "AskUserQuestion";
       if (isToolTile) {
+        inToolRun = true;
         if (!toolGroup) {
           toolGroup = { type: "tool_group", msgs: [] };
           groups.push(toolGroup);
         }
         toolGroup.msgs.push(msg);
+      } else if (msg.type === "tool_result") {
+        // skip – looked up by toolUseId when rendering
+        continue;
+      } else if (inToolRun && msg.type === "assistant_stream") {
+        // Assistant text mid-run: close current grid, emit text, prepare for
+        // a new grid if more tool calls follow.
+        toolGroup = null;
+        groups.push({ type: "single", msg });
+        // inToolRun stays true so the next tool_call starts a fresh grid
       } else {
         toolGroup = null;
-        // skip tool_result entries (they are looked up by toolUseId)
-        if (msg.type === "tool_result") continue;
+        inToolRun = false;
         groups.push({ type: "single", msg });
       }
     }
