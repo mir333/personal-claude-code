@@ -522,26 +522,15 @@ export default function App() {
           </Button>
           <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} onCompact={selectedAgentId ? handleClearContext : null} className="flex-1 border-b-0" />
           {selectedAgentId && (
-            <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className={cn("shrink-0", interactiveQuestions[selectedAgentId] && "text-primary")}
-                onClick={handleToggleInteractiveQuestions}
-                title={interactiveQuestions[selectedAgentId] ? "Questions: interactive (click to auto-answer)" : "Questions: auto-answer (click to pause)"}
-              >
-                <MessageCircleQuestion className="h-5 w-5" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className={cn("shrink-0 mr-2", terminalOpen && "text-primary")}
-                onClick={() => setTerminalOpen((v) => !v)}
-                title="Toggle Claude CLI"
-              >
-                <TerminalSquare className="h-5 w-5" />
-              </Button>
-            </>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn("shrink-0 mr-2", terminalOpen && "text-primary")}
+              onClick={() => setTerminalOpen((v) => !v)}
+              title="Toggle Claude CLI"
+            >
+              <TerminalSquare className="h-5 w-5" />
+            </Button>
           )}
         </div>
         {selectedAgentId ? (
@@ -639,7 +628,7 @@ export default function App() {
                   <div ref={messagesEndRef} />
                 </ScrollArea>
                 <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
-                <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} />
+                <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} />
               </div>
             )}
             {terminalOpen && (
@@ -669,7 +658,7 @@ export default function App() {
   );
 }
 
-function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isBusy }) {
+function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions }) {
   const [text, setText] = useState("");
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -753,6 +742,16 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           className="text-muted-foreground hover:text-yellow-500 shrink-0"
         >
           <Trash2 className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={onToggleQuestions}
+          title={interactiveQuestions ? "Questions: interactive (click to auto-answer)" : "Questions: auto-answer (click to make interactive)"}
+          className={cn("shrink-0", interactiveQuestions ? "text-primary" : "text-muted-foreground hover:text-foreground")}
+        >
+          <MessageCircleQuestion className="h-4 w-4" />
         </Button>
         <Button
           type="button"
