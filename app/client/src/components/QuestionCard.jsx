@@ -31,6 +31,50 @@ export default function QuestionCard({ input, output, interactive, onAnswer }) {
   const answered = output != null;
   const isInteractive = interactive && !answered;
 
+  // Lift selection state for all questions to the parent
+  const [selections, setSelections] = useState(() => {
+    const map = {};
+    questions.forEach((_, i) => { map[i] = new Set(); });
+    return map;
+  });
+  const [submitted, setSubmitted] = useState(false);
+
+  function handleOptionClick(questionIndex, label, multiSelect) {
+    if (!isInteractive || submitted) return;
+    setSelections((prev) => {
+      const next = { ...prev };
+      const current = new Set(prev[questionIndex]);
+      if (multiSelect) {
+        if (current.has(label)) current.delete(label);
+        else current.add(label);
+      } else {
+        current.clear();
+        current.add(label);
+      }
+      next[questionIndex] = current;
+      return next;
+    });
+  }
+
+  function handleSubmit() {
+    if (submitted) return;
+    // Check that every question has at least one selection
+    const allAnswered = questions.every((_, i) => selections[i] && selections[i].size > 0);
+    if (!allAnswered) return;
+
+    setSubmitted(true);
+    if (onAnswer) {
+      const answers = {};
+      questions.forEach((_, i) => {
+        answers[String(i)] = [...selections[i]].join(", ");
+      });
+      onAnswer({ answers });
+    }
+  }
+
+  // For the submit button: check if all questions have a selection
+  const allQuestionsAnswered = questions.every((_, i) => selections[i] && selections[i].size > 0);
+
   return (
     <div className="max-w-2xl space-y-3 my-1">
       {questions.map((q, qi) => (
@@ -41,48 +85,29 @@ export default function QuestionCard({ input, output, interactive, onAnswer }) {
           selectedLabels={selectedLabels}
           answered={answered}
           isInteractive={isInteractive}
-          onAnswer={onAnswer}
-          totalQuestions={questions.length}
+          submitted={submitted}
+          selected={selections[qi] || new Set()}
+          onOptionClick={(label) => handleOptionClick(qi, label, q.multiSelect)}
         />
       ))}
+      {isInteractive && !submitted && (
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            disabled={!allQuestionsAnswered}
+            onClick={handleSubmit}
+            className="gap-1.5"
+          >
+            <Send className="h-3.5 w-3.5" />
+            Submit{questions.length > 1 ? ` All (${questions.length})` : ""}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
 
-function InteractiveQuestion({ question: q, questionIndex: qi, selectedLabels, answered, isInteractive, onAnswer, totalQuestions }) {
-  const [selected, setSelected] = useState(new Set());
-  const [submitted, setSubmitted] = useState(false);
-
-  function handleOptionClick(label) {
-    if (!isInteractive || submitted) return;
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (q.multiSelect) {
-        if (next.has(label)) next.delete(label);
-        else next.add(label);
-      } else {
-        next.clear();
-        next.add(label);
-      }
-      return next;
-    });
-  }
-
-  function handleSubmit() {
-    if (selected.size === 0 || submitted) return;
-    setSubmitted(true);
-    if (onAnswer) {
-      const answers = {};
-      // For single-question cards, use simple answer format
-      if (totalQuestions === 1) {
-        answers["0"] = [...selected].join(", ");
-      } else {
-        answers[String(qi)] = [...selected].join(", ");
-      }
-      onAnswer({ answers });
-    }
-  }
-
+function InteractiveQuestion({ question: q, questionIndex: qi, selectedLabels, answered, isInteractive, submitted, selected, onOptionClick }) {
   // Determine which labels to highlight
   const highlightLabels = isInteractive ? selected : selectedLabels;
 
@@ -107,7 +132,7 @@ function InteractiveQuestion({ question: q, questionIndex: qi, selectedLabels, a
           return (
             <div
               key={oi}
-              onClick={() => handleOptionClick(opt.label)}
+              onClick={() => onOptionClick(opt.label)}
               className={cn(
                 "flex items-start gap-3 rounded-md px-3 py-2 text-sm transition-colors",
                 clickable && "cursor-pointer hover:bg-muted/50",
@@ -155,19 +180,6 @@ function InteractiveQuestion({ question: q, questionIndex: qi, selectedLabels, a
           );
         })}
       </div>
-      {isInteractive && !submitted && (
-        <div className="px-4 py-2.5 border-t border-border bg-muted/20 flex justify-end">
-          <Button
-            size="sm"
-            disabled={selected.size === 0}
-            onClick={handleSubmit}
-            className="gap-1.5"
-          >
-            <Send className="h-3.5 w-3.5" />
-            Submit
-          </Button>
-        </div>
-      )}
       {(answered || submitted) && highlightLabels.size > 0 && (
         <div className="px-4 py-2 border-t border-border bg-muted/20 text-xs text-muted-foreground">
           Selected: {[...highlightLabels].join(", ")}

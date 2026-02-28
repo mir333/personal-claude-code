@@ -50,17 +50,24 @@ export default function Markdown({ children }) {
       rehypePlugins={[rehypeHighlight]}
       components={{
         pre({ children }) {
-          return <>{children}</>;
+          // Block code: <pre><code>...</code></pre> in markdown AST
+          // Extract the inner <code> element's props and render as CodeBlock
+          const codeChild = Array.isArray(children) ? children[0] : children;
+          const codeProps = codeChild?.props || {};
+          return (
+            <CodeBlock className={codeProps.className}>
+              {codeProps.children}
+            </CodeBlock>
+          );
         },
-        code({ inline, className, children }) {
-          if (inline) {
-            return (
-              <code className="rounded-[4px] bg-white/[0.08] px-1.5 py-0.5 text-[13px] font-mono text-primary/90 border border-white/[0.06]">
-                {children}
-              </code>
-            );
-          }
-          return <CodeBlock className={className}>{children}</CodeBlock>;
+        code({ children }) {
+          // Inline code only — block code is handled by the pre component above
+          // Simple monospace styling without code block chrome
+          return (
+            <code className="rounded-[4px] bg-white/[0.08] px-1.5 py-0.5 text-[13px] font-mono text-primary/90 border border-white/[0.06]">
+              {children}
+            </code>
+          );
         },
         a({ href, children }) {
           return (
