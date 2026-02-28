@@ -133,26 +133,19 @@ export default function Markdown({ children }) {
         },
       }}
       className={[
-        "prose-sm prose-invert max-w-none leading-relaxed",
+        // @tailwindcss/typography provides all base typographic styles
+        // (margins, font-sizes, line-heights, list-styles, etc.)
+        "prose prose-sm prose-invert max-w-none",
         // Remove top/bottom margins from first/last children
         "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        // Paragraphs
-        "[&_p]:my-2 [&_p]:leading-relaxed",
-        // Headings
-        "[&_h1]:text-base [&_h1]:font-bold [&_h1]:mt-5 [&_h1]:mb-2 [&_h1]:text-foreground [&_h1]:border-b [&_h1]:border-white/[0.06] [&_h1]:pb-1.5",
-        "[&_h2]:text-[15px] [&_h2]:font-semibold [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-foreground",
-        "[&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-foreground/90",
-        "[&_h4]:text-sm [&_h4]:font-medium [&_h4]:mt-2 [&_h4]:mb-1 [&_h4]:text-foreground/80",
-        // Lists
-        "[&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-0.5",
-        "[&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-0.5",
-        "[&_li]:text-foreground/90 [&_li]:leading-relaxed",
-        "[&_li_p]:my-0.5",
-        // Nested lists
-        "[&_ul_ul]:my-0.5 [&_ol_ol]:my-0.5 [&_ul_ol]:my-0.5 [&_ol_ul]:my-0.5",
-        // Strong / emphasis
-        "[&_strong]:font-semibold [&_strong]:text-foreground",
-        "[&_em]:text-foreground/80",
+        // Fine-tune heading appearance
+        "prose-h1:text-base prose-h1:border-b prose-h1:border-white/[0.06] prose-h1:pb-1.5",
+        "prose-h2:text-[15px]",
+        "prose-h3:text-sm",
+        "prose-h4:text-sm prose-h4:font-medium",
+        // Strong / emphasis colour overrides
+        "prose-strong:text-foreground",
+        "prose-em:text-foreground/80",
       ].join(" ")}
     >
       {children}
