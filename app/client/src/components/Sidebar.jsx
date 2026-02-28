@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import NewAgentForm from "./NewAgentForm.jsx";
-import GitHubClonePanel from "./GitHubClonePanel.jsx";
+import GitHubCloneDialog from "./GitHubClonePanel.jsx";
 import { Dialog } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
@@ -641,15 +641,6 @@ export default function Sidebar({
       <div className="p-3">
         {showForm ? (
           <NewAgentForm onSubmit={handleCreate} onCancel={() => setShowForm(false)} />
-        ) : showClone ? (
-          <GitHubClonePanel
-            onClone={async (repoFullName, provider) => {
-              const agent = await onClone(repoFullName, provider);
-              setShowClone(false);
-              onSelect(agent.id);
-            }}
-            onCancel={() => setShowClone(false)}
-          />
         ) : (
           <div className="space-y-1.5">
             <Button
@@ -670,6 +661,15 @@ export default function Sidebar({
             </Button>
           </div>
         )}
+        <GitHubCloneDialog
+          open={showClone}
+          onClose={() => setShowClone(false)}
+          onClone={async (repoFullName, provider) => {
+            const agent = await onClone(repoFullName, provider);
+            setShowClone(false);
+            onSelect(agent.id);
+          }}
+        />
       </div>
     </div>
   );
