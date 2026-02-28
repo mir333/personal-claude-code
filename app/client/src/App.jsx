@@ -540,7 +540,7 @@ export default function App() {
       </div>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex items-center border-b border-border bg-card">
+        <div className="flex items-center border-b border-border bg-card sticky top-0 z-20">
           <Button
             variant="ghost"
             size="icon"
