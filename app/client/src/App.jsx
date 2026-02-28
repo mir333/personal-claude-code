@@ -240,7 +240,7 @@ export default function App() {
     let sugg = [];
     let acts = [];
     if (lastEntry.type === "stats") {
-      sugg = ["Continue", "Summarize changes", "Commit changes", "Push code"];
+      sugg = ["Continue", "Summarize changes", "Commit changes", "Push code", "Git Status", "Git Push"];
       if (hasPR) {
         sugg.push(`Review ${prLabel}`);
         // Check if assistant responses look like a review (consider all messages)
