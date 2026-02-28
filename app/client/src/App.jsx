@@ -6,7 +6,7 @@ import QuestionCard from "./components/QuestionCard.jsx";
 import Markdown from "./components/Markdown.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
 import SuggestionBar from "./components/SuggestionBar.jsx";
-import SchedulesPage from "./components/SchedulesPage.jsx";
+import TasksPage from "./components/TasksPage.jsx";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -333,11 +333,11 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [selectedConversation]);
 
-  // Fetch schedule count for sidebar badge
+  // Fetch task count for sidebar badge
   useEffect(() => {
     if (!authenticated) return;
     function refresh() {
-      fetch("/api/schedules")
+      fetch("/api/tasks")
         .then((r) => r.ok ? r.json() : [])
         .then((data) => setScheduleCount(data.length))
         .catch(() => {});
@@ -563,7 +563,7 @@ export default function App() {
           )}
         </div>
         {currentView === "schedules" ? (
-          <SchedulesPage />
+          <TasksPage />
         ) : selectedAgentId ? (
           <>
             {!terminalOpen && (

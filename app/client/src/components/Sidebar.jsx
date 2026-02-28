@@ -653,7 +653,7 @@ export default function Sidebar({
             )}
           >
             <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span>Scheduled Tasks</span>
+            <span>Tasks</span>
             {scheduleCount > 0 && (
               <span className="ml-auto text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">{scheduleCount}</span>
             )}

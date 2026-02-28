@@ -809,57 +809,71 @@ app.post("/api/git-config", async (req, res) => {
   });
 });
 
-// --- Schedule endpoints ---
+// --- Task endpoints ---
 import {
-  createSchedule,
-  listSchedules as listAllSchedules,
-  getSchedule,
-  updateSchedule as updateScheduleData,
-  deleteSchedule as deleteScheduleData,
-  toggleSchedule,
-  triggerSchedule,
+  createTask,
+  listTasks as listAllTasks,
+  getTask,
+  updateTask as updateTaskData,
+  deleteTask as deleteTaskData,
+  toggleTask,
+  triggerTask,
   isRunning,
   getRunHistory,
   getRunDetail,
+  getAllRuns,
   validateCron,
   getNextRuns,
-  startScheduler,
+  startTaskScheduler,
   onRunComplete,
-} from "./scheduler.js";
+} from "./tasks.js";
 
-app.get("/api/schedules", (req, res) => {
+app.get("/api/tasks", (req, res) => {
   const profileId = req.profile?.id || null;
-  const items = listAllSchedules(profileId);
+  const items = listAllTasks(profileId);
   // Add running status
-  res.json(items.map((s) => ({ ...s, running: isRunning(s.id) })));
+  res.json(items.map((t) => ({ ...t, running: isRunning(t.id) })));
 });
 
-app.post("/api/schedules", (req, res) => {
+app.post("/api/tasks", (req, res) => {
   const profileId = req.profile?.id || null;
-  const { name, cronExpression, provider, repoFullName, prompt } = req.body;
+  const { name, cronExpression, workingDirectory, prompt } = req.body;
 
   if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
-  if (!cronExpression) return res.status(400).json({ error: "cronExpression is required" });
-  if (!provider) return res.status(400).json({ error: "provider is required" });
-  if (!repoFullName) return res.status(400).json({ error: "repoFullName is required" });
+  if (!workingDirectory) return res.status(400).json({ error: "workingDirectory is required" });
   if (!prompt || !prompt.trim()) return res.status(400).json({ error: "prompt is required" });
 
-  const cronValid = validateCron(cronExpression);
-  if (!cronValid.valid) return res.status(400).json({ error: `Invalid cron expression: ${cronValid.error}` });
+  // Validate cron if provided
+  if (cronExpression) {
+    const cronValid = validateCron(cronExpression);
+    if (!cronValid.valid) return res.status(400).json({ error: `Invalid cron expression: ${cronValid.error}` });
+  }
 
-  const schedule = createSchedule(profileId, { name: name.trim(), cronExpression, provider, repoFullName, prompt: prompt.trim() });
-  res.status(201).json(schedule);
+  // Validate working directory exists
+  const ctx = getProfileContext(req);
+  if (!workingDirectory.startsWith(ctx.workspaceRoot)) {
+    return res.status(400).json({ error: "workingDirectory must be within the workspace" });
+  }
+
+  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: prompt.trim() });
+  res.status(201).json(task);
 });
 
-app.get("/api/schedules/:id", (req, res) => {
-  const schedule = getSchedule(req.params.id);
-  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
-  res.json({ ...schedule, running: isRunning(schedule.id) });
+app.get("/api/tasks/runs", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const limit = parseInt(req.query.limit) || 50;
+  res.json(getAllRuns(profileId, limit));
 });
 
-app.put("/api/schedules/:id", (req, res) => {
-  const schedule = getSchedule(req.params.id);
-  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+app.get("/api/tasks/:id", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  res.json({ ...task, running: isRunning(task.id) });
+});
+
+app.put("/api/tasks/:id", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
 
   const { cronExpression } = req.body;
   if (cronExpression) {
@@ -867,45 +881,47 @@ app.put("/api/schedules/:id", (req, res) => {
     if (!cronValid.valid) return res.status(400).json({ error: `Invalid cron expression: ${cronValid.error}` });
   }
 
-  const updated = updateScheduleData(req.params.id, req.body);
+  const updated = updateTaskData(req.params.id, req.body);
   res.json({ ...updated, running: isRunning(updated.id) });
 });
 
-app.delete("/api/schedules/:id", (req, res) => {
-  const deleted = deleteScheduleData(req.params.id);
-  if (!deleted) return res.status(404).json({ error: "Schedule not found" });
+app.delete("/api/tasks/:id", (req, res) => {
+  const deleted = deleteTaskData(req.params.id);
+  if (!deleted) return res.status(404).json({ error: "Task not found" });
   res.status(204).end();
 });
 
-app.patch("/api/schedules/:id/toggle", (req, res) => {
+app.patch("/api/tasks/:id/toggle", (req, res) => {
   const { enabled } = req.body;
-  const schedule = toggleSchedule(req.params.id, enabled);
-  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
-  res.json({ ...schedule, running: isRunning(schedule.id) });
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  if (!task.cronExpression) return res.status(400).json({ error: "Cannot toggle a task without a schedule" });
+  const toggled = toggleTask(req.params.id, enabled);
+  res.json({ ...toggled, running: isRunning(toggled.id) });
 });
 
-app.post("/api/schedules/:id/trigger", (req, res) => {
-  const schedule = getSchedule(req.params.id);
-  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
-  const triggered = triggerSchedule(req.params.id);
-  if (!triggered) return res.status(409).json({ error: "Schedule is already running" });
-  res.json({ ok: true, message: "Schedule triggered" });
+app.post("/api/tasks/:id/trigger", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  const triggered = triggerTask(req.params.id);
+  if (!triggered) return res.status(409).json({ error: "Task is already running" });
+  res.json({ ok: true, message: "Task triggered" });
 });
 
-app.get("/api/schedules/:id/runs", (req, res) => {
-  const schedule = getSchedule(req.params.id);
-  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+app.get("/api/tasks/:id/runs", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
   const limit = parseInt(req.query.limit) || 20;
   res.json(getRunHistory(req.params.id, limit));
 });
 
-app.get("/api/schedules/:id/runs/:runId", (req, res) => {
+app.get("/api/tasks/:id/runs/:runId", (req, res) => {
   const detail = getRunDetail(req.params.id, req.params.runId);
   if (!detail) return res.status(404).json({ error: "Run not found" });
   res.json(detail);
 });
 
-app.post("/api/schedules/validate-cron", (req, res) => {
+app.post("/api/tasks/validate-cron", (req, res) => {
   const { cronExpression } = req.body;
   if (!cronExpression) return res.status(400).json({ error: "cronExpression is required" });
   const result = validateCron(cronExpression);
@@ -1061,17 +1077,17 @@ wss.on("connection", (ws) => {
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Claude Web UI running on http://0.0.0.0:${PORT}`);
-  // Start the scheduler after server is ready
-  startScheduler();
+  // Start the task scheduler after server is ready
+  startTaskScheduler();
 });
 
-// Broadcast schedule run completions to connected WebSocket clients
-onRunComplete(({ scheduleId, runId, schedule, runEntry }) => {
+// Broadcast task run completions to connected WebSocket clients
+onRunComplete(({ taskId, runId, task, runEntry }) => {
   const msg = JSON.stringify({
-    type: "schedule_run_complete",
-    scheduleId,
+    type: "task_run_complete",
+    taskId,
     runId,
-    scheduleName: schedule.name,
+    taskName: task.name,
     status: runEntry.status,
   });
   for (const client of wss.clients) {
