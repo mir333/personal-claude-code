@@ -135,7 +135,8 @@ export default function Markdown({ children }) {
       className={[
         // @tailwindcss/typography provides all base typographic styles
         // (margins, font-sizes, line-heights, list-styles, etc.)
-        "prose prose-sm prose-invert max-w-none",
+        // Prose CSS vars are overridden in index.css to use theme colours
+        "prose prose-sm max-w-none",
         // Remove top/bottom margins from first/last children
         "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         // Fine-tune heading appearance
@@ -143,9 +144,6 @@ export default function Markdown({ children }) {
         "prose-h2:text-[15px]",
         "prose-h3:text-sm",
         "prose-h4:text-sm prose-h4:font-medium",
-        // Strong / emphasis colour overrides
-        "prose-strong:text-foreground",
-        "prose-em:text-foreground/80",
       ].join(" ")}
     >
       {children}

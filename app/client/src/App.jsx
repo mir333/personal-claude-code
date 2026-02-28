@@ -590,8 +590,11 @@ export default function App() {
                     return (
                       <div key={gi} className="mb-2 text-sm">
                         {msg.type === "user" && (
-                          <div className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
-                            {msg.text}
+                          <div
+                            className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto"
+                            style={{ "--tw-prose-body": "var(--color-primary-foreground)", "--tw-prose-bold": "var(--color-primary-foreground)", "--tw-prose-links": "var(--color-primary-foreground)", "--tw-prose-code": "var(--color-primary-foreground)" }}
+                          >
+                            <Markdown>{msg.text}</Markdown>
                           </div>
                         )}
                         {msg.type === "assistant_stream" && (
