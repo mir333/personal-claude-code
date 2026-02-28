@@ -6,7 +6,6 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import crypto from "crypto";
-import https from "https";
 import session from "express-session";
 import {
   createAgent,
@@ -39,6 +38,24 @@ import {
   verifyProfile,
   getProfilePaths,
 } from "./profiles.js";
+import {
+  getGitDir,
+  readProviders,
+  writeProviders,
+  getProviderToken,
+  getProviderConfig,
+  syncGitCredentials,
+  githubApi,
+  gitlabApi,
+  azureDevOpsApi,
+  execPromise,
+  gitExec,
+  gitEnvForProfile,
+  configureLocalGit,
+  parseRemoteUrl,
+  fetchPrInfo,
+  buildCloneUrl,
+} from "./providers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -188,62 +205,10 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, "..", "dist")));
 
-// --- Provider config helpers (profile-aware) ---
+// --- Provider config helpers (imported from providers.js) ---
 const LEGACY_GIT_DIR = "/home/node/.claude/git";
 fs.mkdirSync(LEGACY_GIT_DIR, { recursive: true });
 process.env.GIT_CONFIG_GLOBAL = path.join(LEGACY_GIT_DIR, "gitconfig");
-
-function getGitDir(profileId) {
-  if (profileId) {
-    const paths = getProfilePaths(profileId);
-    return paths ? paths.gitDir : LEGACY_GIT_DIR;
-  }
-  return LEGACY_GIT_DIR;
-}
-
-function readProviders(profileId) {
-  const gitDir = getGitDir(profileId);
-  const providersPath = path.join(gitDir, "providers.json");
-  try {
-    return JSON.parse(fs.readFileSync(providersPath, "utf-8"));
-  } catch {
-    return {};
-  }
-}
-
-function writeProviders(providers, profileId) {
-  const gitDir = getGitDir(profileId);
-  fs.mkdirSync(gitDir, { recursive: true });
-  fs.writeFileSync(path.join(gitDir, "providers.json"), JSON.stringify(providers, null, 2), { mode: 0o600 });
-}
-
-function getProviderToken(provider, profileId) {
-  const providers = readProviders(profileId);
-  return providers[provider]?.token || null;
-}
-
-function getProviderConfig(provider, profileId) {
-  const providers = readProviders(profileId);
-  return providers[provider] || {};
-}
-
-// Rebuild git-credentials from all configured provider tokens
-function syncGitCredentials(profileId) {
-  const gitDir = getGitDir(profileId);
-  const providers = readProviders(profileId);
-  const lines = [];
-  if (providers.github?.token) {
-    lines.push(`https://${providers.github.token}@github.com`);
-  }
-  if (providers.gitlab?.token) {
-    const host = (providers.gitlab.url || "https://gitlab.com").replace(/^https?:\/\//, "");
-    lines.push(`https://oauth2:${providers.gitlab.token}@${host}`);
-  }
-  if (providers.azuredevops?.token) {
-    lines.push(`https://azuredevops:${providers.azuredevops.token}@dev.azure.com`);
-  }
-  fs.writeFileSync(path.join(gitDir, "git-credentials"), lines.join("\n") + (lines.length ? "\n" : ""), { mode: 0o600 });
-}
 
 // Migrate legacy git-credentials to providers.json on first run
 try {
@@ -260,92 +225,8 @@ try {
   // ignore migration errors
 }
 
-// Generic HTTPS JSON API helper
-function apiRequest(method, hostname, apiPath, headers, body) {
-  return new Promise((resolve, reject) => {
-    const data = body ? JSON.stringify(body) : null;
-    const req = https.request(
-      {
-        hostname,
-        path: apiPath,
-        method,
-        headers: {
-          "User-Agent": "claude-container",
-          Accept: "application/json",
-          ...headers,
-          ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}),
-        },
-      },
-      (res) => {
-        let body = "";
-        res.on("data", (chunk) => (body += chunk));
-        res.on("end", () => {
-          try {
-            resolve({ status: res.statusCode, data: JSON.parse(body) });
-          } catch {
-            resolve({ status: res.statusCode, data: body });
-          }
-        });
-      }
-    );
-    req.on("error", reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
-
-// Provider-specific API wrappers
-function githubApi(method, apiPath, token, body) {
-  return apiRequest(method, "api.github.com", apiPath, {
-    Authorization: `token ${token}`,
-    Accept: "application/vnd.github.v3+json",
-  }, body);
-}
-
-function gitlabApi(method, apiPath, token, gitlabUrl, body) {
-  const host = (gitlabUrl || "https://gitlab.com").replace(/^https?:\/\//, "");
-  return apiRequest(method, host, apiPath, {
-    "PRIVATE-TOKEN": token,
-  }, body);
-}
-
-function azureDevOpsApi(method, org, apiPath, token, body) {
-  const auth = Buffer.from(`:${token}`).toString("base64");
-  return apiRequest(method, "dev.azure.com", `/${org}${apiPath}`, {
-    Authorization: `Basic ${auth}`,
-  }, body);
-}
-
-function execPromise(cmd, args, opts) {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, opts, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr || err.message));
-      else resolve(stdout);
-    });
-  });
-}
-
 function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-}
-
-async function configureLocalGit(dir, profileId) {
-  const gitDir = getGitDir(profileId);
-  const gitconfigPath = path.join(gitDir, "gitconfig");
-  const [globalName, globalEmail] = await Promise.all([
-    gitExec(["config", "--file", gitconfigPath, "--get", "user.name"], "/"),
-    gitExec(["config", "--file", gitconfigPath, "--get", "user.email"], "/"),
-  ]);
-  if (globalName) await execPromise("git", ["config", "user.name", globalName], { cwd: dir });
-  if (globalEmail) await execPromise("git", ["config", "user.email", globalEmail], { cwd: dir });
-}
-
-// Get git env for profile-scoped operations
-function gitEnvForProfile(profileId) {
-  const gitDir = getGitDir(profileId);
-  return {
-    GIT_CONFIG_GLOBAL: path.join(gitDir, "gitconfig"),
-  };
 }
 
 // REST API
@@ -650,72 +531,6 @@ app.get("/api/agents/:id/history", (req, res) => {
   res.json(history);
 });
 
-function gitExec(args, cwd) {
-  return new Promise((resolve) => {
-    execFile("git", args, { cwd, timeout: 5000 }, (err, stdout) => {
-      if (err) resolve(null);
-      else resolve(stdout.trim());
-    });
-  });
-}
-
-// Parse git remote URL to detect provider + owner/repo
-function parseRemoteUrl(remoteUrl, profileId) {
-  let m;
-  // GitHub (https or ssh, with or without token)
-  m = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
-  if (m) return { provider: "github", owner: m[1], repo: m[2] };
-  // Azure DevOps
-  m = remoteUrl.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/.]+)/);
-  if (m) return { provider: "azuredevops", org: m[1], project: m[2], repo: m[3] };
-  // GitLab (check configured URL first, then gitlab.com)
-  const glConfig = getProviderConfig("gitlab", profileId);
-  const glHost = (glConfig.url || "https://gitlab.com").replace(/^https?:\/\//, "").replace(/\/$/, "");
-  const glRe = new RegExp(glHost.replace(/\./g, "\\.") + "[:/]([^/]+)/([^/.]+)");
-  m = remoteUrl.match(glRe);
-  if (m) return { provider: "gitlab", owner: m[1], repo: m[2], host: glHost };
-  // Fallback gitlab.com
-  m = remoteUrl.match(/gitlab\.com[:/]([^/]+)\/([^/.]+)/);
-  if (m) return { provider: "gitlab", owner: m[1], repo: m[2], host: "gitlab.com" };
-  return null;
-}
-
-async function fetchPrInfo(remote, branch, profileId) {
-  if (remote.provider === "github") {
-    const token = getProviderToken("github", profileId);
-    if (!token) return null;
-    const result = await githubApi("GET", `/repos/${remote.owner}/${remote.repo}/pulls?state=open&head=${remote.owner}:${branch}`, token);
-    if (result.status === 200 && result.data.length > 0) {
-      const pr = result.data[0];
-      return { provider: "github", number: pr.number, title: pr.title, url: pr.html_url, owner: remote.owner, repo: remote.repo };
-    }
-  } else if (remote.provider === "gitlab") {
-    const config = getProviderConfig("gitlab", profileId);
-    if (!config.token) return null;
-    const projectPath = encodeURIComponent(`${remote.owner}/${remote.repo}`);
-    const result = await gitlabApi("GET", `/api/v4/projects/${projectPath}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`, config.token, config.url);
-    if (result.status === 200 && result.data.length > 0) {
-      const mr = result.data[0];
-      return { provider: "gitlab", number: mr.iid, title: mr.title, url: mr.web_url, projectPath };
-    }
-  } else if (remote.provider === "azuredevops") {
-    const config = getProviderConfig("azuredevops", profileId);
-    if (!config.token || !config.organization) return null;
-    const result = await azureDevOpsApi("GET", config.organization,
-      `/${remote.project}/_apis/git/repositories/${remote.repo}/pullrequests?searchCriteria.sourceRefName=refs/heads/${encodeURIComponent(branch)}&searchCriteria.status=active&api-version=7.0`,
-      config.token);
-    if (result.status === 200 && result.data.value?.length > 0) {
-      const pr = result.data.value[0];
-      return {
-        provider: "azuredevops", number: pr.pullRequestId, title: pr.title,
-        url: `https://dev.azure.com/${config.organization}/${remote.project}/_git/${remote.repo}/pullrequest/${pr.pullRequestId}`,
-        org: config.organization, project: remote.project, repo: remote.repo,
-      };
-    }
-  }
-  return null;
-}
-
 app.post("/api/agents/:id/pr-review", async (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
@@ -994,6 +809,113 @@ app.post("/api/git-config", async (req, res) => {
   });
 });
 
+// --- Schedule endpoints ---
+import {
+  createSchedule,
+  listSchedules as listAllSchedules,
+  getSchedule,
+  updateSchedule as updateScheduleData,
+  deleteSchedule as deleteScheduleData,
+  toggleSchedule,
+  triggerSchedule,
+  isRunning,
+  getRunHistory,
+  getRunDetail,
+  validateCron,
+  getNextRuns,
+  startScheduler,
+  onRunComplete,
+} from "./scheduler.js";
+
+app.get("/api/schedules", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const items = listAllSchedules(profileId);
+  // Add running status
+  res.json(items.map((s) => ({ ...s, running: isRunning(s.id) })));
+});
+
+app.post("/api/schedules", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const { name, cronExpression, provider, repoFullName, prompt } = req.body;
+
+  if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
+  if (!cronExpression) return res.status(400).json({ error: "cronExpression is required" });
+  if (!provider) return res.status(400).json({ error: "provider is required" });
+  if (!repoFullName) return res.status(400).json({ error: "repoFullName is required" });
+  if (!prompt || !prompt.trim()) return res.status(400).json({ error: "prompt is required" });
+
+  const cronValid = validateCron(cronExpression);
+  if (!cronValid.valid) return res.status(400).json({ error: `Invalid cron expression: ${cronValid.error}` });
+
+  const schedule = createSchedule(profileId, { name: name.trim(), cronExpression, provider, repoFullName, prompt: prompt.trim() });
+  res.status(201).json(schedule);
+});
+
+app.get("/api/schedules/:id", (req, res) => {
+  const schedule = getSchedule(req.params.id);
+  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+  res.json({ ...schedule, running: isRunning(schedule.id) });
+});
+
+app.put("/api/schedules/:id", (req, res) => {
+  const schedule = getSchedule(req.params.id);
+  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+
+  const { cronExpression } = req.body;
+  if (cronExpression) {
+    const cronValid = validateCron(cronExpression);
+    if (!cronValid.valid) return res.status(400).json({ error: `Invalid cron expression: ${cronValid.error}` });
+  }
+
+  const updated = updateScheduleData(req.params.id, req.body);
+  res.json({ ...updated, running: isRunning(updated.id) });
+});
+
+app.delete("/api/schedules/:id", (req, res) => {
+  const deleted = deleteScheduleData(req.params.id);
+  if (!deleted) return res.status(404).json({ error: "Schedule not found" });
+  res.status(204).end();
+});
+
+app.patch("/api/schedules/:id/toggle", (req, res) => {
+  const { enabled } = req.body;
+  const schedule = toggleSchedule(req.params.id, enabled);
+  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+  res.json({ ...schedule, running: isRunning(schedule.id) });
+});
+
+app.post("/api/schedules/:id/trigger", (req, res) => {
+  const schedule = getSchedule(req.params.id);
+  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+  const triggered = triggerSchedule(req.params.id);
+  if (!triggered) return res.status(409).json({ error: "Schedule is already running" });
+  res.json({ ok: true, message: "Schedule triggered" });
+});
+
+app.get("/api/schedules/:id/runs", (req, res) => {
+  const schedule = getSchedule(req.params.id);
+  if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+  const limit = parseInt(req.query.limit) || 20;
+  res.json(getRunHistory(req.params.id, limit));
+});
+
+app.get("/api/schedules/:id/runs/:runId", (req, res) => {
+  const detail = getRunDetail(req.params.id, req.params.runId);
+  if (!detail) return res.status(404).json({ error: "Run not found" });
+  res.json(detail);
+});
+
+app.post("/api/schedules/validate-cron", (req, res) => {
+  const { cronExpression } = req.body;
+  if (!cronExpression) return res.status(400).json({ error: "cronExpression is required" });
+  const result = validateCron(cronExpression);
+  if (result.valid) {
+    res.json({ valid: true, nextRuns: getNextRuns(cronExpression, 5) });
+  } else {
+    res.json({ valid: false, error: result.error });
+  }
+});
+
 // SPA fallback (Express 5 requires named wildcard)
 app.get("{*path}", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
@@ -1139,4 +1061,22 @@ wss.on("connection", (ws) => {
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Claude Web UI running on http://0.0.0.0:${PORT}`);
+  // Start the scheduler after server is ready
+  startScheduler();
+});
+
+// Broadcast schedule run completions to connected WebSocket clients
+onRunComplete(({ scheduleId, runId, schedule, runEntry }) => {
+  const msg = JSON.stringify({
+    type: "schedule_run_complete",
+    scheduleId,
+    runId,
+    scheduleName: schedule.name,
+    status: runEntry.status,
+  });
+  for (const client of wss.clients) {
+    if (client.readyState === client.OPEN) {
+      try { client.send(msg); } catch {}
+    }
+  }
 });

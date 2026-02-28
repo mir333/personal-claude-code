@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search, LogOut } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search, LogOut, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -411,6 +411,9 @@ export default function Sidebar({
   gitStatuses = {},
   profile = null,
   onLogout,
+  currentView = "chat",
+  onNavigate,
+  scheduleCount = 0,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [showClone, setShowClone] = useState(false);
@@ -637,6 +640,26 @@ export default function Sidebar({
           </>
         )}
       </ScrollArea>
+      <Separator />
+      {onNavigate && (
+        <div className="px-2 py-1.5">
+          <button
+            onClick={() => onNavigate("schedules")}
+            className={cn(
+              "w-full flex items-center gap-2 rounded-md px-2 py-2 text-sm text-left transition-colors",
+              currentView === "schedules"
+                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                : "hover:bg-sidebar-accent/50"
+            )}
+          >
+            <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span>Scheduled Tasks</span>
+            {scheduleCount > 0 && (
+              <span className="ml-auto text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">{scheduleCount}</span>
+            )}
+          </button>
+        </div>
+      )}
       <Separator />
       <div className="p-3">
         {showForm ? (

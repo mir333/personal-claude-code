@@ -6,6 +6,7 @@ import QuestionCard from "./components/QuestionCard.jsx";
 import Markdown from "./components/Markdown.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
 import SuggestionBar from "./components/SuggestionBar.jsx";
+import SchedulesPage from "./components/SchedulesPage.jsx";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,8 @@ export default function App() {
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [conversations, setConversations] = useState({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [currentView, setCurrentView] = useState("chat"); // "chat" | "schedules"
+  const [scheduleCount, setScheduleCount] = useState(0);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [interactiveQuestions, setInteractiveQuestions] = useState({});
   const [pendingQuestions, setPendingQuestions] = useState({});
@@ -330,8 +333,31 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [selectedConversation]);
 
+  // Fetch schedule count for sidebar badge
+  useEffect(() => {
+    if (!authenticated) return;
+    function refresh() {
+      fetch("/api/schedules")
+        .then((r) => r.ok ? r.json() : [])
+        .then((data) => setScheduleCount(data.length))
+        .catch(() => {});
+    }
+    refresh();
+    const interval = setInterval(refresh, 60000);
+    return () => clearInterval(interval);
+  }, [authenticated]);
+
+  function handleNavigate(view) {
+    setCurrentView(view);
+    if (view === "schedules") {
+      setSelectedAgentId(null);
+    }
+    setSidebarOpen(false);
+  }
+
   function handleSelectAgent(id) {
     setSelectedAgentId(id);
+    setCurrentView("chat");
     setSidebarOpen(false);
   }
 
@@ -507,6 +533,9 @@ export default function App() {
           gitStatuses={gitStatuses}
           profile={profile}
           onLogout={handleLogout}
+          currentView={currentView}
+          onNavigate={handleNavigate}
+          scheduleCount={scheduleCount}
         />
       </div>
 
@@ -521,7 +550,7 @@ export default function App() {
             <Menu className="h-5 w-5" />
           </Button>
           <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} onCompact={selectedAgentId ? handleClearContext : null} className="flex-1 border-b-0" />
-          {selectedAgentId && (
+          {selectedAgentId && currentView === "chat" && (
             <Button
               variant="ghost"
               size="icon"
@@ -533,7 +562,9 @@ export default function App() {
             </Button>
           )}
         </div>
-        {selectedAgentId ? (
+        {currentView === "schedules" ? (
+          <SchedulesPage />
+        ) : selectedAgentId ? (
           <>
             {!terminalOpen && (
               <div className="flex flex-col min-h-0 flex-1">
