@@ -765,7 +765,9 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
 
   return (
     <form onSubmit={handleSubmit} className="p-4 border-t border-border bg-background sticky bottom-0 z-10">
+      {/* Input row: textarea + send button, full width */}
       <div className="flex gap-2 items-end">
+        {/* Icons inline on desktop */}
         <Button
           type="button"
           variant="ghost"
@@ -773,7 +775,7 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           onClick={onClearContext}
           disabled={!connected}
           title="Clear context"
-          className="text-muted-foreground hover:text-yellow-500 shrink-0"
+          className="text-muted-foreground hover:text-yellow-500 shrink-0 hidden md:inline-flex"
         >
           <Trash2 className="h-4 w-4" />
         </Button>
@@ -783,7 +785,7 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           size="icon"
           onClick={onToggleQuestions}
           title={interactiveQuestions ? "Questions: interactive (click to auto-answer)" : "Questions: auto-answer (click to make interactive)"}
-          className={cn("shrink-0", interactiveQuestions ? "text-primary" : "text-muted-foreground hover:text-foreground")}
+          className={cn("shrink-0 hidden md:inline-flex", interactiveQuestions ? "text-primary" : "text-muted-foreground hover:text-foreground")}
         >
           <MessageCircleQuestion className="h-4 w-4" />
         </Button>
@@ -794,7 +796,7 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           onClick={() => fileInputRef.current?.click()}
           disabled={!connected}
           title="Attach files"
-          className="text-muted-foreground hover:text-foreground shrink-0"
+          className="text-muted-foreground hover:text-foreground shrink-0 hidden md:inline-flex"
         >
           <Paperclip className="h-4 w-4" />
         </Button>
@@ -848,6 +850,41 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
             <Send className="h-4 w-4" />
           </Button>
         )}
+      </div>
+      {/* Icons row on mobile */}
+      <div className="flex gap-1 mt-2 md:hidden">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={onClearContext}
+          disabled={!connected}
+          title="Clear context"
+          className="text-muted-foreground hover:text-yellow-500 h-8 w-8"
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={onToggleQuestions}
+          title={interactiveQuestions ? "Questions: interactive (click to auto-answer)" : "Questions: auto-answer (click to make interactive)"}
+          className={cn("h-8 w-8", interactiveQuestions ? "text-primary" : "text-muted-foreground hover:text-foreground")}
+        >
+          <MessageCircleQuestion className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={!connected}
+          title="Attach files"
+          className="text-muted-foreground hover:text-foreground h-8 w-8"
+        >
+          <Paperclip className="h-4 w-4" />
+        </Button>
       </div>
     </form>
   );
