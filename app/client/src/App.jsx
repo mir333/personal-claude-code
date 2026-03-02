@@ -572,7 +572,7 @@ export default function App() {
                   {groupedConversation.map((group, gi) => {
                     if (group.type === "tool_group") {
                       return (
-                        <div key={`tg-${gi}`} className="grid grid-cols-2 md:grid-cols-3 gap-2 my-1 text-sm">
+                        <div key={`tg-${gi}`} className="grid grid-cols-2 md:grid-cols-4 gap-2 my-1 text-sm">
                           {group.msgs.map((msg, ti) => (
                             <ToolCallCard
                               key={ti}
