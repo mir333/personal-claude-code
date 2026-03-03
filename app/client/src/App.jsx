@@ -5,6 +5,7 @@ import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
 import Markdown from "./components/Markdown.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
+import ClaudeSetupBanner from "./components/ClaudeSetupBanner.jsx";
 import SuggestionBar from "./components/SuggestionBar.jsx";
 import TasksPage from "./components/TasksPage.jsx";
 import { Button } from "@/components/ui/button";
@@ -562,6 +563,7 @@ export default function App() {
             </Button>
           )}
         </div>
+        <ClaudeSetupBanner />
         {currentView === "schedules" ? (
           <TasksPage />
         ) : selectedAgentId ? (

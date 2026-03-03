@@ -97,6 +97,36 @@ function getProfileContext(req) {
   };
 }
 
+// --- Claude credentials check (public, no auth required) ---
+app.get("/api/claude-status", (_req, res) => {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || "/home/node/.claude";
+  const credsPath = path.join(configDir, ".credentials.json");
+
+  let hasCredentials = false;
+  let authMethod = null;
+
+  try {
+    if (fs.existsSync(credsPath)) {
+      const creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
+      // Check for OAuth tokens (Claude Pro/Max)
+      if (creds.claudeAiOauth?.accessToken) {
+        hasCredentials = true;
+        authMethod = "oauth";
+      }
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  // Also check for API key in environment
+  if (!hasCredentials && process.env.ANTHROPIC_API_KEY) {
+    hasCredentials = true;
+    authMethod = "api_key";
+  }
+
+  res.json({ hasCredentials, authMethod });
+});
+
 // --- Profile endpoints (public, no auth required for login flow) ---
 
 app.get("/api/profiles", (_req, res) => {
