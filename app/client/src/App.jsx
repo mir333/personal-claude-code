@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck } from "lucide-react";
+import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, X } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -31,6 +31,7 @@ export default function App() {
   const [interactiveQuestions, setInteractiveQuestions] = useState({});
   const [pendingQuestions, setPendingQuestions] = useState({});
   const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
+  const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> { text } or null
   const terminalDataRef = useRef(null);
   const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
@@ -67,6 +68,23 @@ export default function App() {
           ...prev,
           [agentId]: { input: rest.input, toolUseId: rest.toolUseId },
         }));
+        return;
+      }
+
+      if (type === "message_queued") {
+        setQueuedMessages((prev) => ({ ...prev, [agentId]: { text: rest.text } }));
+        return;
+      }
+
+      if (type === "message_dequeued") {
+        // Pending message is now being processed — promote to regular user message
+        setQueuedMessages((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
+        setConversations((prev) => {
+          const conv = (prev[agentId] || []).map((m) =>
+            m.type === "pending_user" ? { type: "user", text: m.text } : m
+          );
+          return { ...prev, [agentId]: conv };
+        });
         return;
       }
 
@@ -132,6 +150,7 @@ export default function App() {
         });
         updateAgentStatus(agentId, "error");
         setPendingQuestions((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
+        setQueuedMessages((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
         notify("Agent error", { body: rest.message });
       }
     },
@@ -364,11 +383,34 @@ export default function App() {
 
   function handleSend(text) {
     if (!selectedAgentId || !text.trim()) return;
-    setConversations((prev) => ({
-      ...prev,
-      [selectedAgentId]: [...(prev[selectedAgentId] || []), { type: "user", text }],
-    }));
+    const agent = agents.find((a) => a.id === selectedAgentId);
+    const isBusy = agent?.status === "busy";
+
+    if (isBusy) {
+      // Replace any existing pending message in the conversation
+      setConversations((prev) => {
+        const conv = (prev[selectedAgentId] || []).filter((m) => m.type !== "pending_user");
+        return { ...prev, [selectedAgentId]: [...conv, { type: "pending_user", text }] };
+      });
+    } else {
+      setConversations((prev) => ({
+        ...prev,
+        [selectedAgentId]: [...(prev[selectedAgentId] || []), { type: "user", text }],
+      }));
+    }
     send({ type: "message", agentId: selectedAgentId, text });
+  }
+
+  function handleCancelPending() {
+    if (!selectedAgentId) return;
+    // Remove pending message from conversation UI
+    setConversations((prev) => {
+      const conv = (prev[selectedAgentId] || []).filter((m) => m.type !== "pending_user");
+      return { ...prev, [selectedAgentId]: conv };
+    });
+    setQueuedMessages((prev) => { const next = { ...prev }; delete next[selectedAgentId]; return next; });
+    // Tell server to abort so the pending message is cleared server-side too
+    send({ type: "cancel_pending", agentId: selectedAgentId });
   }
 
   function handleStop() {
@@ -653,6 +695,27 @@ export default function App() {
                             <div className="flex-1 border-t border-dashed border-yellow-500/50" />
                           </div>
                         )}
+                        {msg.type === "pending_user" && (
+                          <div className="max-w-lg ml-auto">
+                            <div
+                              className="bg-primary/60 text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto border border-dashed border-primary-foreground/20"
+                              style={{ "--tw-prose-body": "var(--color-primary-foreground)", "--tw-prose-bold": "var(--color-primary-foreground)", "--tw-prose-links": "var(--color-primary-foreground)", "--tw-prose-code": "var(--color-primary-foreground)" }}
+                            >
+                              <Markdown>{msg.text}</Markdown>
+                            </div>
+                            <div className="flex items-center justify-end gap-2 mt-1">
+                              <Clock className="h-3 w-3 text-muted-foreground animate-pulse" />
+                              <span className="text-[11px] text-muted-foreground">Queued — will send when agent finishes</span>
+                              <button
+                                onClick={handleCancelPending}
+                                className="text-[11px] text-destructive hover:text-destructive/80 flex items-center gap-0.5 transition-colors"
+                              >
+                                <X className="h-3 w-3" />
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
                         {msg.type === "error" && (
                           <div className="max-w-2xl bg-destructive/20 text-destructive rounded-lg px-4 py-2">
                             {msg.message}
@@ -814,7 +877,7 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           value={text}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder={connected ? "Send a message..." : "Connecting..."}
+          placeholder={!connected ? "Connecting..." : isBusy ? "Type a message to queue..." : "Send a message..."}
           disabled={!connected}
           rows={1}
           className="flex-1 resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
@@ -831,26 +894,29 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           >
             <WifiOff className="h-4 w-4" />
           </Button>
-        ) : isBusy ? (
-          <Button
-            type="button"
-            variant="destructive"
-            size="icon"
-            onClick={onStop}
-            title="Stop agent"
-            className="shrink-0"
-          >
-            <Square className="h-4 w-4" />
-          </Button>
         ) : (
-          <Button
-            type="submit"
-            disabled={!text.trim()}
-            size="icon"
-            className="shrink-0"
-          >
-            <Send className="h-4 w-4" />
-          </Button>
+          <div className="flex gap-1 shrink-0">
+            {isBusy && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon"
+                onClick={onStop}
+                title="Stop agent"
+              >
+                <Square className="h-4 w-4" />
+              </Button>
+            )}
+            <Button
+              type="submit"
+              disabled={!text.trim()}
+              size="icon"
+              title={isBusy ? "Queue message (will send when agent finishes)" : "Send message"}
+              className={isBusy ? "bg-primary/70 hover:bg-primary/80" : ""}
+            >
+              {isBusy ? <Clock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+            </Button>
+          </div>
         )}
       </div>
       {/* Icons row on mobile */}

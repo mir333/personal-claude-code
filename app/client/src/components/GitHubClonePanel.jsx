@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog } from "@/components/ui/dialog";
@@ -20,6 +20,20 @@ export default function GitHubCloneDialog({ open, onClose, onClone }) {
   const [filter, setFilter] = useState("");
   const [cloning, setCloning] = useState(null);
   const [cloneError, setCloneError] = useState("");
+
+  // Reset all form state when dialog closes so it's fresh on next open
+  useEffect(() => {
+    if (!open) {
+      setProvider("github");
+      setRepos([]);
+      setLoading(false);
+      setFetched(false);
+      setError("");
+      setFilter("");
+      setCloning(null);
+      setCloneError("");
+    }
+  }, [open]);
 
   const fetchRepos = useCallback(() => {
     setLoading(true);

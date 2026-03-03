@@ -989,6 +989,7 @@ server.on("upgrade", (request, socket, head) => {
 wss.on("connection", (ws) => {
   const connectionTerminals = new Set(); // track terminals opened by this connection
   const connectionListeners = new Map(); // agentId -> listener fn
+  const pendingMessages = new Map(); // agentId -> queued message text (last one wins)
 
   // Send boot ID so clients can detect server restarts
   ws.send(JSON.stringify({ type: "welcome", bootId }));
@@ -1003,7 +1004,14 @@ wss.on("connection", (ws) => {
     }
 
     if (data.type === "abort" && data.agentId) {
+      // Clear any queued pending message when aborting
+      pendingMessages.delete(data.agentId);
       abortAgent(data.agentId);
+      return;
+    }
+
+    if (data.type === "cancel_pending" && data.agentId) {
+      pendingMessages.delete(data.agentId);
       return;
     }
 
@@ -1048,28 +1056,56 @@ wss.on("connection", (ws) => {
     }
 
     if (data.type === "message" && data.agentId && data.text) {
-      // Evict any existing listener for this agent to prevent leaks
-      const existingListener = connectionListeners.get(data.agentId);
-      if (existingListener) {
-        unsubscribeAgent(data.agentId, existingListener);
-      }
-      const listener = (event) => {
+      const agent = getAgent(data.agentId);
+
+      // If agent is busy, queue the message (last one wins) instead of rejecting
+      if (agent && agent.status === "busy") {
+        pendingMessages.set(data.agentId, data.text);
         if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ ...event, agentId: data.agentId }));
+          ws.send(JSON.stringify({ type: "message_queued", agentId: data.agentId, text: data.text }));
         }
-      };
-      subscribeAgent(data.agentId, listener);
-      connectionListeners.set(data.agentId, listener);
-      try {
-        await sendMessage(data.agentId, data.text);
-      } catch (err) {
-        ws.send(
-          JSON.stringify({ type: "error", agentId: data.agentId, message: err.message })
-        );
-      } finally {
-        unsubscribeAgent(data.agentId, listener);
-        connectionListeners.delete(data.agentId);
+        return;
       }
+
+      // Process message and then drain any queued follow-up
+      async function processMessage(text) {
+        // Evict any existing listener for this agent to prevent leaks
+        const existingListener = connectionListeners.get(data.agentId);
+        if (existingListener) {
+          unsubscribeAgent(data.agentId, existingListener);
+        }
+        const listener = (event) => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ ...event, agentId: data.agentId }));
+          }
+        };
+        subscribeAgent(data.agentId, listener);
+        connectionListeners.set(data.agentId, listener);
+        try {
+          await sendMessage(data.agentId, text);
+        } catch (err) {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(
+              JSON.stringify({ type: "error", agentId: data.agentId, message: err.message })
+            );
+          }
+        } finally {
+          unsubscribeAgent(data.agentId, listener);
+          connectionListeners.delete(data.agentId);
+        }
+
+        // After message completes, check if there's a queued pending message
+        const queued = pendingMessages.get(data.agentId);
+        if (queued && ws.readyState === ws.OPEN) {
+          pendingMessages.delete(data.agentId);
+          // Notify client the pending message is now being sent
+          ws.send(JSON.stringify({ type: "message_dequeued", agentId: data.agentId, text: queued }));
+          // Process the queued message
+          await processMessage(queued);
+        }
+      }
+
+      await processMessage(data.text);
     } else if (data.type === "terminal_start" && data.agentId) {
       const agent = getAgent(data.agentId);
       if (!agent) {
@@ -1099,6 +1135,7 @@ wss.on("connection", (ws) => {
       unsubscribeAgent(agentId, listener);
     }
     connectionListeners.clear();
+    pendingMessages.clear();
     killAllTerminals(connectionTerminals);
     connectionTerminals.clear();
   });
