@@ -784,7 +784,7 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
     let message = "";
     if (hasFiles) {
       const fileParts = attachedFiles.map(
-        (f) => `<file path="${f.name}">\n${f.content}\n</file>`
+        (f) => `<file path="${f.name.replace(/"/g, '&quot;')}">\n${f.content}\n</file>`
       );
       message = fileParts.join("\n") + "\n";
     }
@@ -811,15 +811,21 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
-    files.forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setAttachedFiles((prev) => [...prev, { name: file.name, content: reader.result }]);
-      };
-      reader.onerror = () => {
-        setAttachedFiles((prev) => [...prev, { name: file.name, content: "[Error: could not read file]" }]);
-      };
-      reader.readAsText(file);
+    Promise.all(
+      files.map((file) => {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            resolve({ name: file.name, content: reader.result });
+          };
+          reader.onerror = () => {
+            resolve({ name: file.name, content: "[Error: could not read file]" });
+          };
+          reader.readAsText(file);
+        });
+      })
+    ).then((newFiles) => {
+      setAttachedFiles((prev) => [...prev, ...newFiles]);
     });
 
     e.target.value = "";
