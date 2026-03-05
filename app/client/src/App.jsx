@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X } from "lucide-react";
+import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2 } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -39,6 +39,8 @@ export default function App() {
   const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
   const messagesEndRef = useRef(null);
+  const scrollAreaRef = useRef(null);
+  const isLoadingMoreRef = useRef(false);
   const lastEventIndexRef = useRef({});
   const reconnectHandlerRef = useRef(null);
 
@@ -81,22 +83,25 @@ export default function App() {
         // Pending message is now being processed — promote to regular user message
         setQueuedMessages((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
         setConversations((prev) => {
-          const conv = (prev[agentId] || []).map((m) =>
+          const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
+          const entries = data.entries.map((m) =>
             m.type === "pending_user" ? { type: "user", text: m.text } : m
           );
-          return { ...prev, [agentId]: conv };
+          return { ...prev, [agentId]: { ...data, entries } };
         });
         return;
       }
 
       if (type === "agent_status") {
         updateAgentStatus(agentId, rest.status);
-        // Reload conversation from disk to get clean state
-        fetch(`/api/agents/${agentId}/history`)
-          .then((r) => r.ok ? r.json() : [])
-          .then((entries) => {
+        fetch(`/api/agents/${agentId}/history?limit=50&offset=0`)
+          .then((r) => r.ok ? r.json() : { entries: [], total: 0 })
+          .then(({ entries, total }) => {
             if (entries.length > 0) {
-              setConversations((prev) => ({ ...prev, [agentId]: entries }));
+              setConversations((prev) => ({
+                ...prev,
+                [agentId]: { entries, total, hasMore: entries.length < total },
+              }));
             }
           })
           .catch(() => {});
@@ -105,37 +110,37 @@ export default function App() {
 
       if (type === "text_delta") {
         setConversations((prev) => {
-          const conv = prev[agentId] || [];
-          const last = conv[conv.length - 1];
+          const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
+          const last = data.entries[data.entries.length - 1];
           if (last && last.type === "assistant_stream") {
-            return { ...prev, [agentId]: [...conv.slice(0, -1), { ...last, text: last.text + rest.text }] };
+            return { ...prev, [agentId]: { ...data, entries: [...data.entries.slice(0, -1), { ...last, text: last.text + rest.text }] } };
           }
-          return { ...prev, [agentId]: [...conv, { type: "assistant_stream", text: rest.text }] };
+          return { ...prev, [agentId]: { ...data, entries: [...data.entries, { type: "assistant_stream", text: rest.text }], total: data.total + 1 } };
         });
         updateAgentStatus(agentId, "busy");
       } else if (type === "tool_call") {
         setConversations((prev) => {
-          const conv = prev[agentId] || [];
-          return { ...prev, [agentId]: [...conv, { type: "tool_call", tool: rest.tool, input: rest.input, toolUseId: rest.toolUseId }] };
+          const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
+          return { ...prev, [agentId]: { ...data, entries: [...data.entries, { type: "tool_call", tool: rest.tool, input: rest.input, toolUseId: rest.toolUseId }], total: data.total + 1 } };
         });
       } else if (type === "tool_result") {
         setConversations((prev) => {
-          const conv = prev[agentId] || [];
-          return { ...prev, [agentId]: [...conv, { type: "tool_result", toolUseId: rest.toolUseId, output: rest.output }] };
+          const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
+          return { ...prev, [agentId]: { ...data, entries: [...data.entries, { type: "tool_result", toolUseId: rest.toolUseId, output: rest.output }], total: data.total + 1 } };
         });
       } else if (type === "done") {
         setConversations((prev) => {
-          const conv = prev[agentId] || [];
+          const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
           return {
             ...prev,
-            [agentId]: [...conv, {
+            [agentId]: { ...data, entries: [...data.entries, {
               type: "stats",
               cost: rest.cost,
               usage: rest.usage,
               modelUsage: rest.modelUsage,
               numTurns: rest.numTurns,
               durationMs: rest.durationMs,
-            }],
+            }], total: data.total + 1 },
           };
         });
         updateAgentStatus(agentId, "idle");
@@ -146,8 +151,8 @@ export default function App() {
         notify("Agent finished", { body: agent?.name || agentId });
       } else if (type === "error") {
         setConversations((prev) => {
-          const conv = prev[agentId] || [];
-          return { ...prev, [agentId]: [...conv, { type: "error", message: rest.message }] };
+          const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
+          return { ...prev, [agentId]: { ...data, entries: [...data.entries, { type: "error", message: rest.message }], total: data.total + 1 } };
         });
         updateAgentStatus(agentId, "error");
         setPendingQuestions((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
@@ -161,12 +166,12 @@ export default function App() {
   const handleServerRestart = useCallback(() => {
     setConversations((prev) => {
       const next = {};
-      for (const [agentId, conv] of Object.entries(prev)) {
-        // Only add indicator if there are existing messages and last entry isn't already a context_cleared
-        if (conv.length > 0 && conv[conv.length - 1].type !== "context_cleared") {
-          next[agentId] = [...conv, { type: "context_cleared", timestamp: Date.now() }];
+      for (const [agentId, data] of Object.entries(prev)) {
+        const entries = data?.entries || [];
+        if (entries.length > 0 && entries[entries.length - 1].type !== "context_cleared") {
+          next[agentId] = { ...data, entries: [...entries, { type: "context_cleared", timestamp: Date.now() }], total: (data?.total || 0) + 1 };
         } else {
-          next[agentId] = conv;
+          next[agentId] = data;
         }
       }
       return next;
@@ -191,7 +196,7 @@ export default function App() {
     fetchAgents();
   };
 
-  const selectedConversation = conversations[selectedAgentId] || [];
+  const selectedConversation = conversations[selectedAgentId]?.entries || [];
 
   // Group tool_call messages (excluding AskUserQuestion) into grids.
   // tool_result entries between tool calls are skipped (looked up by toolUseId).
@@ -320,15 +325,17 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedAgentId) return;
-    // Only load if no entries exist yet (avoid overwriting active session)
-    if (conversations[selectedAgentId]?.length) return;
-    fetch(`/api/agents/${selectedAgentId}/history`)
-      .then((r) => r.ok ? r.json() : [])
-      .then((entries) => {
-        if (entries.length > 0) {
+    if (conversations[selectedAgentId]?.entries?.length) return;
+    fetch(`/api/agents/${selectedAgentId}/history?limit=50&offset=0`)
+      .then((r) => r.ok ? r.json() : { entries: [], total: 0 })
+      .then(({ entries, total }) => {
+        if (entries.length > 0 || total === 0) {
           setConversations((prev) => {
-            if (prev[selectedAgentId]?.length) return prev;
-            return { ...prev, [selectedAgentId]: entries };
+            if (prev[selectedAgentId]?.entries?.length) return prev;
+            return {
+              ...prev,
+              [selectedAgentId]: { entries, total, hasMore: entries.length < total },
+            };
           });
         }
       })
@@ -353,6 +360,64 @@ export default function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [selectedConversation]);
+
+  const loadMoreMessages = useCallback(async () => {
+    if (!selectedAgentId) return;
+    const conv = conversations[selectedAgentId];
+    if (!conv || !conv.hasMore || isLoadingMoreRef.current) return;
+    isLoadingMoreRef.current = true;
+
+    const scrollEl = scrollAreaRef.current?.querySelector("[data-scroll-viewport]");
+    const prevScrollHeight = scrollEl?.scrollHeight || 0;
+
+    try {
+      const offset = conv.entries.length;
+      const res = await fetch(`/api/agents/${selectedAgentId}/history?limit=50&offset=${offset}`);
+      if (!res.ok) return;
+      const { entries: older, total } = await res.json();
+      if (older.length === 0) return;
+
+      setConversations((prev) => {
+        const existing = prev[selectedAgentId];
+        if (!existing) return prev;
+        const merged = [...older, ...existing.entries];
+        return {
+          ...prev,
+          [selectedAgentId]: {
+            entries: merged,
+            total,
+            hasMore: merged.length < total,
+          },
+        };
+      });
+
+      // Preserve scroll position after React renders
+      requestAnimationFrame(() => {
+        if (scrollEl) {
+          const newScrollHeight = scrollEl.scrollHeight;
+          scrollEl.scrollTop = newScrollHeight - prevScrollHeight;
+        }
+      });
+    } catch {
+      // ignore fetch errors
+    } finally {
+      isLoadingMoreRef.current = false;
+    }
+  }, [selectedAgentId, conversations]);
+
+  useEffect(() => {
+    const scrollEl = scrollAreaRef.current?.querySelector("[data-scroll-viewport]");
+    if (!scrollEl) return;
+
+    const handleScroll = () => {
+      if (scrollEl.scrollTop < 50) {
+        loadMoreMessages();
+      }
+    };
+
+    scrollEl.addEventListener("scroll", handleScroll, { passive: true });
+    return () => scrollEl.removeEventListener("scroll", handleScroll);
+  }, [loadMoreMessages]);
 
   // Fetch task count for sidebar badge
   useEffect(() => {
@@ -390,14 +455,15 @@ export default function App() {
     if (isBusy) {
       // Replace any existing pending message in the conversation
       setConversations((prev) => {
-        const conv = (prev[selectedAgentId] || []).filter((m) => m.type !== "pending_user");
-        return { ...prev, [selectedAgentId]: [...conv, { type: "pending_user", text }] };
+        const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
+        const entries = data.entries.filter((m) => m.type !== "pending_user");
+        return { ...prev, [selectedAgentId]: { ...data, entries: [...entries, { type: "pending_user", text }] } };
       });
     } else {
-      setConversations((prev) => ({
-        ...prev,
-        [selectedAgentId]: [...(prev[selectedAgentId] || []), { type: "user", text }],
-      }));
+      setConversations((prev) => {
+        const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
+        return { ...prev, [selectedAgentId]: { ...data, entries: [...data.entries, { type: "user", text }], total: data.total + 1 } };
+      });
     }
     send({ type: "message", agentId: selectedAgentId, text });
   }
@@ -406,8 +472,9 @@ export default function App() {
     if (!selectedAgentId) return;
     // Remove pending message from conversation UI
     setConversations((prev) => {
-      const conv = (prev[selectedAgentId] || []).filter((m) => m.type !== "pending_user");
-      return { ...prev, [selectedAgentId]: conv };
+      const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
+      const entries = data.entries.filter((m) => m.type !== "pending_user");
+      return { ...prev, [selectedAgentId]: { ...data, entries } };
     });
     setQueuedMessages((prev) => { const next = { ...prev }; delete next[selectedAgentId]; return next; });
     // Tell server to abort so the pending message is cleared server-side too
@@ -424,13 +491,13 @@ export default function App() {
     try {
       const res = await fetch(`/api/agents/${selectedAgentId}/clear-context`, { method: "POST" });
       if (res.ok) {
-        setConversations((prev) => ({
-          ...prev,
-          [selectedAgentId]: [
-            ...(prev[selectedAgentId] || []),
-            { type: "context_cleared", timestamp: Date.now() },
-          ],
-        }));
+        setConversations((prev) => {
+          const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
+          return {
+            ...prev,
+            [selectedAgentId]: { ...data, entries: [...data.entries, { type: "context_cleared", timestamp: Date.now() }], total: data.total + 1 },
+          };
+        });
       }
     } catch {}
   }
@@ -514,21 +581,21 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       const providerLabel = data.provider === "gitlab" ? "MR" : "PR";
-      setConversations((prev) => ({
-        ...prev,
-        [selectedAgentId]: [...(prev[selectedAgentId] || []), {
+      setConversations((prev) => {
+        const d = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
+        return { ...prev, [selectedAgentId]: { ...d, entries: [...d.entries, {
           type: "assistant_stream",
           text: `Review posted to ${providerLabel}. [View ${providerLabel}](${data.url})`,
-        }],
-      }));
+        }], total: d.total + 1 } };
+      });
     } catch (err) {
-      setConversations((prev) => ({
-        ...prev,
-        [selectedAgentId]: [...(prev[selectedAgentId] || []), {
+      setConversations((prev) => {
+        const d = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
+        return { ...prev, [selectedAgentId]: { ...d, entries: [...d.entries, {
           type: "error",
           message: `Failed to post review: ${err.message}`,
-        }],
-      }));
+        }], total: d.total + 1 } };
+      });
     }
   }
 
@@ -570,6 +637,13 @@ export default function App() {
           onDelete={handleDeleteAgent}
           onDeleteProject={handleDeleteProject}
           onBranchChange={fetchGitStatus}
+          onRefresh={async () => {
+            await Promise.all([
+              fetchDirectories(),
+              fetchAgents(),
+              fetchAllGitStatuses(),
+            ]);
+          }}
           directories={directories}
           findAgentByWorkDir={findAgentByWorkDir}
           notificationsEnabled={notificationsEnabled}
@@ -613,7 +687,12 @@ export default function App() {
           <>
             {!terminalOpen && (
               <div className="flex flex-col min-h-0 flex-1">
-                <ScrollArea className="flex-1 p-4">
+                <ScrollArea ref={scrollAreaRef} className="flex-1 p-4">
+                  {conversations[selectedAgentId]?.hasMore && (
+                    <div className="flex justify-center py-2">
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
                   {groupedConversation.map((group, gi) => {
                     if (group.type === "tool_group") {
                       return (
