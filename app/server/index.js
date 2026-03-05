@@ -557,7 +557,9 @@ app.post("/api/agents/:id/clear-context", (req, res) => {
 app.get("/api/agents/:id/history", (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
-  const history = getHistory(req.params.id);
+  const limit = req.query.limit != null ? parseInt(req.query.limit, 10) : undefined;
+  const offset = req.query.offset != null ? parseInt(req.query.offset, 10) : 0;
+  const history = getHistory(req.params.id, limit, offset);
   res.json(history);
 });
 

@@ -1,7 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { mkdirSync } from "fs";
-import { loadConversation, appendEntry } from "./storage.js";
+import { loadConversation, appendEntry, loadConversationSlice } from "./storage.js";
 import { recordUsage } from "./usage.js";
 
 const agents = new Map();
@@ -64,9 +64,12 @@ export function deleteAgent(id) {
   return true;
 }
 
-export function getHistory(id) {
+export function getHistory(id, limit, offset) {
   const agent = agents.get(id);
   if (!agent) return null;
+  if (limit != null) {
+    return loadConversationSlice(agent.workingDirectory, limit, offset);
+  }
   return loadConversation(agent.workingDirectory);
 }
 

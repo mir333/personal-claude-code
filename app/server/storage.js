@@ -36,6 +36,16 @@ export function loadConversation(workDir) {
   }
 }
 
+export function loadConversationSlice(workDir, limit = 50, offset = 0) {
+  const all = loadConversation(workDir);
+  const total = all.length;
+  if (limit <= 0) return { entries: all, total };
+  const start = Math.max(0, total - offset - limit);
+  const end = total - offset;
+  const entries = all.slice(Math.max(start, 0), Math.max(end, 0));
+  return { entries, total };
+}
+
 export function saveConversation(workDir, entries) {
   const dir = path.join(workDir, STORAGE_DIR);
   const dirExisted = existsSync(dir);
