@@ -635,8 +635,7 @@ export default function App() {
                       <div key={gi} className="mb-2 text-sm">
                         {msg.type === "user" && (
                           <div
-                            className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto"
-                            style={{ "--tw-prose-body": "var(--color-primary-foreground)", "--tw-prose-bold": "var(--color-primary-foreground)", "--tw-prose-links": "var(--color-primary-foreground)", "--tw-prose-code": "var(--color-primary-foreground)" }}
+                            className="max-w-lg bg-secondary text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto"
                           >
                             <Markdown>{msg.text}</Markdown>
                           </div>
@@ -698,8 +697,7 @@ export default function App() {
                         {msg.type === "pending_user" && (
                           <div className="max-w-lg ml-auto">
                             <div
-                              className="bg-primary/60 text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto border border-dashed border-primary-foreground/20"
-                              style={{ "--tw-prose-body": "var(--color-primary-foreground)", "--tw-prose-bold": "var(--color-primary-foreground)", "--tw-prose-links": "var(--color-primary-foreground)", "--tw-prose-code": "var(--color-primary-foreground)" }}
+                              className="bg-secondary/60 text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto border border-dashed border-secondary-foreground/20"
                             >
                               <Markdown>{msg.text}</Markdown>
                             </div>
