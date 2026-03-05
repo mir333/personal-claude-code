@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search, LogOut, Clock } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search, LogOut, Clock, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -404,6 +404,7 @@ export default function Sidebar({
   onDelete,
   onDeleteProject,
   onBranchChange,
+  onRefresh,
   directories,
   findAgentByWorkDir,
   notificationsEnabled,
@@ -419,6 +420,17 @@ export default function Sidebar({
   const [showClone, setShowClone] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [gitConfigured, setGitConfigured] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     fetch("/api/git-config")
@@ -546,9 +558,19 @@ export default function Sidebar({
       </Dialog>
       <ScrollArea className="flex-1">
         <div className="p-2">
-          <p className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            Workspace
-          </p>
+          <div className="flex items-center justify-between px-2 py-1.5">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Workspace
+            </p>
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              title="Refresh workspaces and git status"
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+            </button>
+          </div>
           {directories.length === 0 && (
             <div className="flex flex-col items-center py-6 px-2 text-center">
               <FolderOpen className="h-10 w-10 text-muted-foreground/20 mb-2" />
