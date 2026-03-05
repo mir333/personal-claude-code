@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, X } from "lucide-react";
+import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -9,6 +9,7 @@ import ClaudeSetupBanner from "./components/ClaudeSetupBanner.jsx";
 import SuggestionBar from "./components/SuggestionBar.jsx";
 import TasksPage from "./components/TasksPage.jsx";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useAgents } from "./hooks/useAgents.js";
@@ -757,6 +758,7 @@ export default function App() {
 
 function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions }) {
   const [text, setText] = useState("");
+  const [attachedFiles, setAttachedFiles] = useState([]);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -775,12 +777,26 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
 
   function handleSubmit(e) {
     e?.preventDefault();
-    if (text.trim()) {
-      onSend(text);
-      setText("");
-      if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
-      }
+    const hasFiles = attachedFiles.length > 0;
+    const hasText = text.trim().length > 0;
+    if (!hasFiles && !hasText) return;
+
+    let message = "";
+    if (hasFiles) {
+      const fileParts = attachedFiles.map(
+        (f) => `<file path="${f.name}">\n${f.content}\n</file>`
+      );
+      message = fileParts.join("\n") + "\n";
+    }
+    if (hasText) {
+      message += text;
+    }
+
+    onSend(message);
+    setText("");
+    setAttachedFiles([]);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
     }
   }
 
@@ -795,35 +811,22 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
-    let pending = files.length;
-    const results = [];
-
-    files.forEach((file, idx) => {
+    files.forEach((file) => {
       const reader = new FileReader();
       reader.onload = () => {
-        results[idx] = `<file path="${file.name}">\n${reader.result}\n</file>\n`;
-        pending--;
-        if (pending === 0) {
-          const prefix = results.join("\n");
-          setText((prev) => prefix + (prev ? "\n" + prev : ""));
-          // Reset height after state update
-          requestAnimationFrame(() => resetHeight());
-        }
+        setAttachedFiles((prev) => [...prev, { name: file.name, content: reader.result }]);
       };
       reader.onerror = () => {
-        results[idx] = `<file path="${file.name}">\n[Error: could not read file]\n</file>\n`;
-        pending--;
-        if (pending === 0) {
-          const prefix = results.join("\n");
-          setText((prev) => prefix + (prev ? "\n" + prev : ""));
-          requestAnimationFrame(() => resetHeight());
-        }
+        setAttachedFiles((prev) => [...prev, { name: file.name, content: "[Error: could not read file]" }]);
       };
       reader.readAsText(file);
     });
 
-    // Reset the input so re-selecting the same file works
     e.target.value = "";
+  }
+
+  function removeFile(index) {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
   return (
@@ -870,17 +873,45 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           className="hidden"
           onChange={handleFileSelect}
         />
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          placeholder={!connected ? "Connecting..." : isBusy ? "Type a message to queue..." : "Send a message..."}
-          disabled={!connected}
-          rows={1}
-          className="flex-1 resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-          style={{ maxHeight: "25vh" }}
-        />
+        <div className="flex-1 flex flex-col min-w-0">
+          {attachedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-3 py-2 border border-input border-b-0 rounded-t-md bg-muted/30">
+              {attachedFiles.map((file, idx) => (
+                <Badge
+                  key={idx}
+                  variant="secondary"
+                  className="gap-1 pl-1.5 pr-1 py-0.5 max-w-[200px] cursor-default"
+                >
+                  <FileText className="h-3 w-3 shrink-0" />
+                  <span className="truncate text-xs">{file.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeFile(idx)}
+                    className="ml-0.5 rounded-sm hover:bg-foreground/10 p-0.5 shrink-0"
+                    title={`Remove ${file.name}`}
+                    aria-label={`Remove ${file.name}`}
+                  >
+                    <X className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            placeholder={!connected ? "Connecting..." : isBusy ? "Type a message to queue..." : "Send a message..."}
+            disabled={!connected}
+            rows={1}
+            className={cn(
+              "w-full resize-none overflow-y-auto border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+              attachedFiles.length > 0 ? "rounded-b-md rounded-t-none border-t-0" : "rounded-md"
+            )}
+            style={{ maxHeight: "25vh" }}
+          />
+        </div>
         {!connected ? (
           <Button
             type="button"
@@ -907,7 +938,7 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
             )}
             <Button
               type="submit"
-              disabled={!text.trim()}
+              disabled={!text.trim() && attachedFiles.length === 0}
               size="icon"
               title={isBusy ? "Queue message (will send when agent finishes)" : "Send message"}
               className={isBusy ? "bg-primary/70 hover:bg-primary/80" : ""}
