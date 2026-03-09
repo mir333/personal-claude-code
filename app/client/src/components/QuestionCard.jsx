@@ -76,7 +76,7 @@ export default function QuestionCard({ input, output, interactive, onAnswer }) {
   const allQuestionsAnswered = questions.every((_, i) => selections[i] && selections[i].size > 0);
 
   return (
-    <div className="max-w-2xl space-y-3 my-1">
+    <div className="max-w-3/4 space-y-3 my-1">
       {questions.map((q, qi) => (
         <InteractiveQuestion
           key={qi}

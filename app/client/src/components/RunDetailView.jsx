@@ -120,7 +120,7 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
                 </div>
               )}
               {msg.type === "assistant_stream" && (
-                <div className="max-w-2xl bg-card border border-border rounded-lg px-4 py-2">
+                <div className="max-w-3/4 bg-card border border-border rounded-lg px-4 py-2">
                   <Markdown>{msg.text}</Markdown>
                 </div>
               )}
@@ -134,7 +134,7 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
                 </div>
               )}
               {msg.type === "error" && (
-                <div className="max-w-2xl bg-destructive/20 text-destructive rounded-lg px-4 py-2">
+                <div className="max-w-3/4 bg-destructive/20 text-destructive rounded-lg px-4 py-2">
                   {msg.message}
                 </div>
               )}
