@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
-import { ArrowLeft, Loader2, FileText, Download } from "lucide-react";
+import { ArrowLeft, Loader2, FileText, Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Dialog } from "@/components/ui/dialog";
 import ToolCallCard from "./ToolCallCard.jsx";
 import Markdown from "./Markdown.jsx";
 import { formatDuration } from "@/lib/cron";
@@ -35,17 +36,22 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
 
   function handlePreviewArtifact(filename) {
     const url = `/api/tasks/${scheduleId}/runs/${runId}/artifacts/${encodeURIComponent(filename)}`;
-    if (filename.endsWith(".md") || filename.endsWith(".txt") || filename.endsWith(".json") || filename.endsWith(".log")) {
+    const isText = filename.endsWith(".md") || filename.endsWith(".txt") || filename.endsWith(".json") || filename.endsWith(".log");
+    if (isText) {
+      setPreviewFile(filename);
+      setPreviewContent(null); // show loading state
       fetch(url)
         .then((r) => r.text())
-        .then((text) => {
-          setPreviewContent(text);
-          setPreviewFile(filename);
-        })
-        .catch(() => {});
+        .then((text) => setPreviewContent(text))
+        .catch(() => setPreviewContent("*Failed to load file.*"));
     } else {
       window.open(url, "_blank");
     }
+  }
+
+  function closePreview() {
+    setPreviewContent(null);
+    setPreviewFile(null);
   }
 
   // Group conversation entries just like App.jsx does
@@ -147,27 +153,38 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
         </div>
       )}
 
-      {/* Artifact preview */}
-      {previewContent && previewFile && (
-        <div className="mx-4 mt-2 border border-border rounded-md">
-          <div className="px-3 py-1.5 bg-muted/50 border-b border-border flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">{previewFile}</span>
-            <button
-              onClick={() => { setPreviewContent(null); setPreviewFile(null); }}
-              className="text-xs text-muted-foreground hover:text-foreground"
-            >
-              Close
-            </button>
+      {/* Artifact preview dialog */}
+      <Dialog
+        open={!!previewFile}
+        onClose={closePreview}
+        className="max-w-4xl max-h-[95vh] w-[95vw]"
+      >
+        <div className="flex flex-col h-full max-h-[95vh]">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
+            <div>
+              <h3 className="text-sm font-semibold">{previewFile}</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">{scheduleName}</p>
+            </div>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={closePreview}>
+              <X className="h-4 w-4" />
+            </Button>
           </div>
-          <div className="p-3 max-h-80 overflow-y-auto">
-            {previewFile.endsWith(".md") ? (
-              <div className="text-sm"><Markdown>{previewContent}</Markdown></div>
+          <div className="flex-1 overflow-y-auto px-6 py-4">
+            {previewContent === null ? (
+              <div className="flex items-center justify-center py-16 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                Loading...
+              </div>
+            ) : previewFile?.endsWith(".md") ? (
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <Markdown>{previewContent}</Markdown>
+              </div>
             ) : (
               <pre className="text-xs whitespace-pre-wrap text-foreground/80">{previewContent}</pre>
             )}
           </div>
         </div>
-      )}
+      </Dialog>
 
       {/* Conversation */}
       <ScrollArea className="flex-1 p-4">

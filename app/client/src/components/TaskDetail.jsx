@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw, FileText } from "lucide-react";
+import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw, FileText, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Dialog } from "@/components/ui/dialog";
+import Markdown from "./Markdown.jsx";
 import { describeCron, formatDuration, formatRelativeTime } from "@/lib/cron";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +39,7 @@ export default function TaskDetail({
   const [webhookUrl, setWebhookUrl] = useState(null);
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [webhookLoading, setWebhookLoading] = useState(false);
+  const [summaryDialog, setSummaryDialog] = useState({ open: false, content: null, loading: false, runDate: null });
 
   const loadRuns = useCallback(async () => {
     setRunsLoading(true);
@@ -107,6 +110,18 @@ export default function TaskDetail({
     navigator.clipboard.writeText(webhookUrl);
     setWebhookCopied(true);
     setTimeout(() => setWebhookCopied(false), 1500);
+  }
+
+  function handleOpenSummary(e, run) {
+    e.stopPropagation();
+    setSummaryDialog({ open: true, content: null, loading: true, runDate: new Date(run.startedAt).toLocaleString() });
+    fetch(`/api/tasks/${task.id}/runs/${run.id}/artifacts/summary.md`)
+      .then((r) => {
+        if (!r.ok) throw new Error("Summary not found");
+        return r.text();
+      })
+      .then((text) => setSummaryDialog((prev) => ({ ...prev, content: text, loading: false })))
+      .catch(() => setSummaryDialog((prev) => ({ ...prev, content: "*Summary not available.*", loading: false })));
   }
 
   const isScheduled = !!task.cronExpression;
@@ -313,17 +328,15 @@ export default function TaskDetail({
                       {new Date(run.startedAt).toLocaleString()}
                     </span>
                     {run.outputFiles?.length > 0 && (
-                      <a
-                        href={`/api/tasks/${task.id}/runs/${run.id}/artifacts/summary.md`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="flex items-center gap-0.5 text-[11px] text-blue-500 hover:text-blue-400 hover:underline"
+                      <span
+                        role="button"
+                        onClick={(e) => handleOpenSummary(e, run)}
+                        className="flex items-center gap-0.5 text-[11px] text-blue-500 hover:text-blue-400 hover:underline cursor-pointer"
                         title="View summary"
                       >
                         <FileText className="h-3 w-3" />
                         Summary
-                      </a>
+                      </span>
                     )}
                     <span className="text-[11px] text-muted-foreground">
                       {formatDuration(run.durationMs)}
@@ -350,6 +363,44 @@ export default function TaskDetail({
           </div>
         )}
       </ScrollArea>
+
+      {/* Summary dialog */}
+      <Dialog
+        open={summaryDialog.open}
+        onClose={() => setSummaryDialog({ open: false, content: null, loading: false, runDate: null })}
+        className="max-w-4xl max-h-[95vh] w-[95vw]"
+      >
+        <div className="flex flex-col h-full max-h-[95vh]">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
+            <div>
+              <h3 className="text-sm font-semibold">{task.name} — Summary</h3>
+              {summaryDialog.runDate && (
+                <p className="text-xs text-muted-foreground mt-0.5">{summaryDialog.runDate}</p>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setSummaryDialog({ open: false, content: null, loading: false, runDate: null })}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-6 py-4">
+            {summaryDialog.loading ? (
+              <div className="flex items-center justify-center py-16 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                Loading summary...
+              </div>
+            ) : (
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <Markdown>{summaryDialog.content}</Markdown>
+              </div>
+            )}
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }
