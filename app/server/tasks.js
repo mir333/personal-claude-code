@@ -175,6 +175,7 @@ export function createTask(profileId, config) {
     cronExpression: config.cronExpression || null,
     workingDirectory: config.workingDirectory,
     prompt: config.prompt,
+    webhookToken: null,
     createdAt: now,
     updatedAt: now,
     lastRunAt: null,
@@ -254,6 +255,36 @@ export function toggleTask(taskId, enabled) {
   return task;
 }
 
+export function generateWebhookToken(taskId) {
+  const task = tasks.get(taskId);
+  if (!task) return null;
+  task.webhookToken = crypto.randomBytes(32).toString("hex");
+  task.updatedAt = Date.now();
+  tasks.set(taskId, task);
+  persistTasks(task.profileId);
+  return task.webhookToken;
+}
+
+export function revokeWebhookToken(taskId) {
+  const task = tasks.get(taskId);
+  if (!task) return false;
+  task.webhookToken = null;
+  task.updatedAt = Date.now();
+  tasks.set(taskId, task);
+  persistTasks(task.profileId);
+  return true;
+}
+
+export function getTaskByWebhookToken(taskId, token) {
+  const task = tasks.get(taskId);
+  if (!task || !task.webhookToken) return null;
+  const expected = Buffer.from(task.webhookToken, "utf-8");
+  const received = Buffer.from(token, "utf-8");
+  if (expected.length !== received.length) return null;
+  if (!crypto.timingSafeEqual(expected, received)) return null;
+  return task;
+}
+
 // --- Run history ---
 
 export function getRunHistory(taskId, limit = 20) {
@@ -293,7 +324,7 @@ export function getAllRuns(profileId, limit = 50) {
 
 // --- Execution ---
 
-export async function executeTask(taskId) {
+export async function executeTask(taskId, { payload } = {}) {
   const task = tasks.get(taskId);
   if (!task) return;
   if (runningJobs.has(taskId)) return;
@@ -327,7 +358,11 @@ export async function executeTask(taskId) {
     subscribeAgent(agent.id, listener);
 
     // Run prompt
-    await sendMessage(agent.id, task.prompt);
+    let prompt = task.prompt;
+    if (payload) {
+      prompt += `\n\n---\nThe following payload was received via webhook:\n${payload}\n---`;
+    }
+    await sendMessage(agent.id, prompt);
 
     // Extract results
     unsubscribeAgent(agent.id, listener);
@@ -423,12 +458,12 @@ export async function executeTask(taskId) {
   }
 }
 
-export function triggerTask(taskId) {
+export function triggerTask(taskId, opts) {
   const task = tasks.get(taskId);
   if (!task) return false;
   if (runningJobs.has(taskId)) return false;
   // Fire async, don't await
-  executeTask(taskId);
+  executeTask(taskId, opts);
   return true;
 }
 
