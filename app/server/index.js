@@ -226,9 +226,11 @@ app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit
   if (isRunning(taskId)) return res.status(409).json({ error: "Task is already running" });
 
   const payload = req.body && typeof req.body === "string" && req.body.trim() ? req.body : null;
-  const triggered = triggerTask(taskId, payload ? { payload } : undefined);
-  if (!triggered) return res.status(409).json({ error: "Task is already running" });
-  res.json({ ok: true, message: "Task triggered via webhook" });
+  const result = triggerTask(taskId, payload ? { payload } : undefined);
+  if (!result) return res.status(409).json({ error: "Task is already running" });
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const summaryUrl = `${baseUrl}/api/tasks/${taskId}/runs/${result.runId}/artifacts/summary.md`;
+  res.json({ ok: true, message: "Task triggered via webhook", runId: result.runId, summaryUrl });
 });
 
 // Apply auth guard to all API routes (except auth/profile endpoints above)
@@ -961,9 +963,11 @@ app.patch("/api/tasks/:id/toggle", (req, res) => {
 app.post("/api/tasks/:id/trigger", (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "Task not found" });
-  const triggered = triggerTask(req.params.id);
-  if (!triggered) return res.status(409).json({ error: "Task is already running" });
-  res.json({ ok: true, message: "Task triggered" });
+  const result = triggerTask(req.params.id);
+  if (!result) return res.status(409).json({ error: "Task is already running" });
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const summaryUrl = `${baseUrl}/api/tasks/${req.params.id}/runs/${result.runId}/artifacts/summary.md`;
+  res.json({ ok: true, message: "Task triggered", runId: result.runId, summaryUrl });
 });
 
 app.get("/api/tasks/:id/runs", (req, res) => {

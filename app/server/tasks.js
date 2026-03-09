@@ -366,12 +366,12 @@ function scanOutputFiles(dir) {
   }
 }
 
-export async function executeTask(taskId, { payload } = {}) {
+export async function executeTask(taskId, { payload, runId } = {}) {
   const task = tasks.get(taskId);
   if (!task) return;
   if (runningJobs.has(taskId)) return;
 
-  const runId = crypto.randomUUID();
+  if (!runId) runId = crypto.randomUUID();
   const conversation = [];
 
   runningJobs.add(taskId);
@@ -511,11 +511,13 @@ export async function executeTask(taskId, { payload } = {}) {
 
 export function triggerTask(taskId, opts) {
   const task = tasks.get(taskId);
-  if (!task) return false;
-  if (runningJobs.has(taskId)) return false;
+  if (!task) return null;
+  if (runningJobs.has(taskId)) return null;
+  // Generate runId upfront so callers can build artifact URLs
+  const runId = crypto.randomUUID();
   // Fire async, don't await
-  executeTask(taskId, opts);
-  return true;
+  executeTask(taskId, { ...opts, runId });
+  return { runId };
 }
 
 export function isRunning(taskId) {

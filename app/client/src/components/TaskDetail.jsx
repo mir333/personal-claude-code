@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw } from "lucide-react";
+import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -312,6 +312,19 @@ export default function TaskDetail({
                     <span className="text-xs font-medium flex-1 truncate">
                       {new Date(run.startedAt).toLocaleString()}
                     </span>
+                    {run.outputFiles?.length > 0 && (
+                      <a
+                        href={`/api/tasks/${task.id}/runs/${run.id}/artifacts/summary.md`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-0.5 text-[11px] text-blue-500 hover:text-blue-400 hover:underline"
+                        title="View summary"
+                      >
+                        <FileText className="h-3 w-3" />
+                        Summary
+                      </a>
+                    )}
                     <span className="text-[11px] text-muted-foreground">
                       {formatDuration(run.durationMs)}
                     </span>
