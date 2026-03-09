@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { flushSync } from "react-dom";
 import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2 } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
@@ -41,6 +42,7 @@ export default function App() {
   const messagesEndRef = useRef(null);
   const scrollAreaRef = useRef(null);
   const isLoadingMoreRef = useRef(false);
+  const didLoadMoreRef = useRef(false);
   const lastEventIndexRef = useRef({});
   const reconnectHandlerRef = useRef(null);
 
@@ -358,6 +360,10 @@ export default function App() {
   }, [selectedAgentId]);
 
   useEffect(() => {
+    if (didLoadMoreRef.current) {
+      didLoadMoreRef.current = false;
+      return;
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [selectedConversation]);
 
@@ -377,27 +383,31 @@ export default function App() {
       const { entries: older, total } = await res.json();
       if (older.length === 0) return;
 
-      setConversations((prev) => {
-        const existing = prev[selectedAgentId];
-        if (!existing) return prev;
-        const merged = [...older, ...existing.entries];
-        return {
-          ...prev,
-          [selectedAgentId]: {
-            entries: merged,
-            total,
-            hasMore: merged.length < total,
-          },
-        };
+      didLoadMoreRef.current = true;
+
+      // Use flushSync so the DOM updates synchronously, allowing us to
+      // measure the new scrollHeight and restore position immediately
+      // without a rAF race condition.
+      flushSync(() => {
+        setConversations((prev) => {
+          const existing = prev[selectedAgentId];
+          if (!existing) return prev;
+          const merged = [...older, ...existing.entries];
+          return {
+            ...prev,
+            [selectedAgentId]: {
+              entries: merged,
+              total,
+              hasMore: merged.length < total,
+            },
+          };
+        });
       });
 
-      // Preserve scroll position after React renders
-      requestAnimationFrame(() => {
-        if (scrollEl) {
-          const newScrollHeight = scrollEl.scrollHeight;
-          scrollEl.scrollTop = newScrollHeight - prevScrollHeight;
-        }
-      });
+      if (scrollEl) {
+        const newScrollHeight = scrollEl.scrollHeight;
+        scrollEl.scrollTop = newScrollHeight - prevScrollHeight;
+      }
     } catch {
       // ignore fetch errors
     } finally {
