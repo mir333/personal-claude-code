@@ -10,7 +10,7 @@ import {
   subscribeAgent,
   unsubscribeAgent,
 } from "./agents.js";
-
+const SUMMARY_INSTRUCTION = `\n\n---\n**IMPORTANT:** After completing your task, you MUST create a markdown file called \`summary.md\` in the current working directory with a complete summary of your findings, analysis, and results. All output files must be saved to the current working directory (the connected workspace).`;
 // --- In-memory state ---
 const tasks = new Map(); // taskId -> Task
 const runningJobs = new Set(); // taskIds currently executing
@@ -403,11 +403,7 @@ export async function executeTask(taskId, { payload, runId } = {}) {
     subscribeAgent(agent.id, listener);
 
     // Build prompt — always instruct agent to save a summary file in the workspace
-    let prompt = task.prompt;
-    prompt += `\n\n---\n**IMPORTANT:** After completing your task, you MUST create a markdown file called \`summary.md\` in the current working directory with a complete summary of your findings, analysis, and results. All output files must be saved to the current working directory (the connected workspace).`;
-    if (payload) {
-      prompt += `\n\n${payload}`;
-    }
+    let prompt = payload ? `${task.prompt}\n\n${payload}${SUMMARY_INSTRUCTION}`:`${task.prompt}${SUMMARY_INSTRUCTION}`;
     await sendMessage(agent.id, prompt);
 
     // Extract results
