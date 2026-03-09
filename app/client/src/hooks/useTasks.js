@@ -98,6 +98,23 @@ export function useTasks() {
     return res.json();
   }, []);
 
+  const generateWebhookToken = useCallback(async (id) => {
+    const res = await fetch(`/api/tasks/${id}/webhook-token`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to generate webhook token");
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, webhookToken: data.webhookToken } : t)));
+    return data;
+  }, []);
+
+  const revokeWebhookToken = useCallback(async (id) => {
+    const res = await fetch(`/api/tasks/${id}/webhook-token`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || "Failed to revoke webhook token");
+    }
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, webhookToken: null } : t)));
+  }, []);
+
   return {
     tasks,
     loading,
@@ -111,6 +128,8 @@ export function useTasks() {
     fetchRunDetail,
     fetchAllRuns,
     validateCron,
+    generateWebhookToken,
+    revokeWebhookToken,
     setTasks,
   };
 }
