@@ -25,6 +25,8 @@ export default function TasksPage() {
     fetchRunDetail,
     fetchAllRuns,
     setTasks,
+    generateWebhookToken,
+    revokeWebhookToken,
   } = useTasks();
 
   const [view, setView] = useState("list"); // "list" | "detail" | "run" | "runs-overview"
@@ -157,6 +159,8 @@ export default function TasksPage() {
           onTrigger={triggerTask}
           onViewRun={handleViewRun}
           fetchRuns={fetchRuns}
+          onGenerateWebhookToken={generateWebhookToken}
+          onRevokeWebhookToken={revokeWebhookToken}
         />
         <TaskForm
           open={showForm}

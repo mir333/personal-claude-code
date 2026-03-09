@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen } from "lucide-react";
+import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -28,10 +28,15 @@ export default function TaskDetail({
   onTrigger,
   onViewRun,
   fetchRuns,
+  onGenerateWebhookToken,
+  onRevokeWebhookToken,
 }) {
   const [runs, setRuns] = useState([]);
   const [runsLoading, setRunsLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
+  const [webhookUrl, setWebhookUrl] = useState(null);
+  const [webhookCopied, setWebhookCopied] = useState(false);
+  const [webhookLoading, setWebhookLoading] = useState(false);
 
   const loadRuns = useCallback(async () => {
     setRunsLoading(true);
@@ -70,6 +75,38 @@ export default function TaskDetail({
       await onDelete(task.id);
       onBack();
     }
+  }
+
+  async function handleGenerateToken() {
+    setWebhookLoading(true);
+    try {
+      const data = await onGenerateWebhookToken(task.id);
+      setWebhookUrl(data.webhookUrl);
+    } catch (err) {
+      alert(err.message || "Failed to generate webhook URL");
+    } finally {
+      setWebhookLoading(false);
+    }
+  }
+
+  async function handleRevokeToken() {
+    if (!confirm("Revoke webhook URL? Any integrations using it will stop working.")) return;
+    setWebhookLoading(true);
+    try {
+      await onRevokeWebhookToken(task.id);
+      setWebhookUrl(null);
+    } catch (err) {
+      alert(err.message || "Failed to revoke webhook");
+    } finally {
+      setWebhookLoading(false);
+    }
+  }
+
+  function handleCopyWebhookUrl() {
+    if (!webhookUrl) return;
+    navigator.clipboard.writeText(webhookUrl);
+    setWebhookCopied(true);
+    setTimeout(() => setWebhookCopied(false), 1500);
   }
 
   const isScheduled = !!task.cronExpression;
@@ -142,6 +179,61 @@ export default function TaskDetail({
           <pre className="text-xs text-foreground/80 bg-muted/50 rounded-md px-3 py-2 whitespace-pre-wrap max-h-24 overflow-y-auto border border-border/50">
             {task.prompt}
           </pre>
+        </div>
+
+        {/* Webhook section */}
+        <div className="pl-10">
+          <p className="text-[11px] text-muted-foreground/60 mb-1">Webhook:</p>
+          {task.webhookToken ? (
+            <div className="space-y-1.5">
+              {webhookUrl ? (
+                <div className="flex items-center gap-2">
+                  <code className="text-[11px] bg-muted/50 rounded px-2 py-1 border border-border/50 truncate flex-1 select-all">
+                    {webhookUrl}
+                  </code>
+                  <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={handleCopyWebhookUrl}>
+                    {webhookCopied ? <CopyCheck className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  Webhook enabled — <button className="underline hover:text-foreground" onClick={handleGenerateToken}>show URL</button>
+                </p>
+              )}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-6"
+                  onClick={handleGenerateToken}
+                  disabled={webhookLoading}
+                >
+                  <RefreshCw className={cn("h-3 w-3 mr-1", webhookLoading && "animate-spin")} />
+                  Regenerate
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-6 text-destructive hover:text-destructive"
+                  onClick={handleRevokeToken}
+                  disabled={webhookLoading}
+                >
+                  Revoke
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs h-6"
+              onClick={handleGenerateToken}
+              disabled={webhookLoading}
+            >
+              {webhookLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Globe className="h-3 w-3 mr-1" />}
+              Enable Webhook
+            </Button>
+          )}
         </div>
 
         {/* Action buttons */}
