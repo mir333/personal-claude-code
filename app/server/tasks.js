@@ -39,6 +39,10 @@ function getRunDetailPath(profileId, taskId, runId) {
   return path.join(getRunsDir(profileId, taskId), `${runId}.json`);
 }
 
+function getRunOutputDir(profileId, taskId, runId) {
+  return path.join(getRunsDir(profileId, taskId), "output", runId);
+}
+
 // --- Storage helpers ---
 
 function loadTasksFromDisk(profileId) {
@@ -324,6 +328,44 @@ export function getAllRuns(profileId, limit = 50) {
 
 // --- Execution ---
 
+// Archive task-generated files (summary.md, etc.) from workspace to run storage
+function archiveOutputFiles(workspaceDir, outputDir) {
+  const archived = [];
+  try {
+    // Look for summary.md in the workspace root
+    const summaryPath = path.join(workspaceDir, "summary.md");
+    if (fs.existsSync(summaryPath)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+      const destPath = path.join(outputDir, "summary.md");
+      fs.copyFileSync(summaryPath, destPath);
+      const stat = fs.statSync(destPath);
+      archived.push({ name: "summary.md", size: stat.size });
+      // Remove from workspace after archiving
+      fs.unlinkSync(summaryPath);
+    }
+  } catch (err) {
+    console.error(`[tasks] Failed to archive output files:`, err.message);
+  }
+  return archived;
+}
+
+function scanOutputFiles(dir) {
+  try {
+    if (!fs.existsSync(dir)) return [];
+    const files = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && !entry.name.startsWith(".")) {
+        const stat = fs.statSync(path.join(dir, entry.name));
+        files.push({ name: entry.name, size: stat.size });
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
 export async function executeTask(taskId, { payload } = {}) {
   const task = tasks.get(taskId);
   if (!task) return;
@@ -335,6 +377,9 @@ export async function executeTask(taskId, { payload } = {}) {
   runningJobs.add(taskId);
   const startedAt = Date.now();
   let agentId = null;
+
+  // Output directory for archiving task-generated files
+  const outputDir = getRunOutputDir(task.profileId, taskId, runId);
 
   console.log(`[tasks] Starting run ${runId} for task "${task.name}" (${taskId})`);
 
@@ -357,8 +402,9 @@ export async function executeTask(taskId, { payload } = {}) {
     };
     subscribeAgent(agent.id, listener);
 
-    // Run prompt
+    // Build prompt — always instruct agent to save a summary file in the workspace
     let prompt = task.prompt;
+    prompt += `\n\n---\n**IMPORTANT:** After completing your task, you MUST create a markdown file called \`summary.md\` in the current working directory with a complete summary of your findings, analysis, and results. All output files must be saved to the current working directory (the connected workspace).`;
     if (payload) {
       prompt += `\n\n${payload}`;
     }
@@ -372,6 +418,9 @@ export async function executeTask(taskId, { payload } = {}) {
       .map((e) => e.text)
       .join("");
 
+    // Copy summary.md (and other output files) from workspace to run storage
+    const outputFiles = archiveOutputFiles(task.workingDirectory, outputDir);
+
     // Persist
     const runEntry = {
       id: runId,
@@ -384,6 +433,7 @@ export async function executeTask(taskId, { payload } = {}) {
       usage: doneEvent?.usage || null,
       error: null,
       resultSummary: assistantTexts.slice(0, 500),
+      outputFiles: outputFiles.length > 0 ? outputFiles : null,
     };
 
     saveRunDetail(task.profileId, taskId, runId, {
@@ -430,6 +480,7 @@ export async function executeTask(taskId, { payload } = {}) {
       usage: null,
       error: err.message,
       resultSummary: null,
+      outputFiles: null,
     };
     appendRunEntry(task.profileId, taskId, runEntry);
 
@@ -529,4 +580,23 @@ export function onRunComplete(listener) {
 
 export function offRunComplete(listener) {
   runCompleteListeners.delete(listener);
+}
+
+// --- Run artifacts ---
+
+export function getRunArtifacts(taskId, runId) {
+  const task = tasks.get(taskId);
+  if (!task) return null;
+  const outputDir = getRunOutputDir(task.profileId, taskId, runId);
+  return scanOutputFiles(outputDir);
+}
+
+export function getRunArtifactPath(taskId, runId, filename) {
+  const task = tasks.get(taskId);
+  if (!task) return null;
+  // Sanitize filename to prevent path traversal
+  const safe = path.basename(filename);
+  const filePath = path.join(getRunOutputDir(task.profileId, taskId, runId), safe);
+  if (!fs.existsSync(filePath)) return null;
+  return filePath;
 }

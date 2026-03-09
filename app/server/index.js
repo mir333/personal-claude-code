@@ -874,6 +874,8 @@ import {
   generateWebhookToken,
   revokeWebhookToken,
   getTaskByWebhookToken,
+  getRunArtifacts,
+  getRunArtifactPath,
 } from "./tasks.js";
 
 app.get("/api/tasks", (req, res) => {
@@ -923,10 +925,18 @@ app.put("/api/tasks/:id", (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "Task not found" });
 
-  const { cronExpression } = req.body;
+  const { cronExpression, workingDirectory } = req.body;
   if (cronExpression) {
     const cronValid = validateCron(cronExpression);
     if (!cronValid.valid) return res.status(400).json({ error: `Invalid cron expression: ${cronValid.error}` });
+  }
+
+  // Validate working directory if provided
+  if (workingDirectory) {
+    const ctx = getProfileContext(req);
+    if (!workingDirectory.startsWith(ctx.workspaceRoot)) {
+      return res.status(400).json({ error: "workingDirectory must be within the workspace" });
+    }
   }
 
   const updated = updateTaskData(req.params.id, req.body);
@@ -967,6 +977,21 @@ app.get("/api/tasks/:id/runs/:runId", (req, res) => {
   const detail = getRunDetail(req.params.id, req.params.runId);
   if (!detail) return res.status(404).json({ error: "Run not found" });
   res.json(detail);
+});
+
+app.get("/api/tasks/:id/runs/:runId/artifacts", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  const artifacts = getRunArtifacts(req.params.id, req.params.runId);
+  res.json(artifacts || []);
+});
+
+app.get("/api/tasks/:id/runs/:runId/artifacts/:filename", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  const filePath = getRunArtifactPath(req.params.id, req.params.runId, req.params.filename);
+  if (!filePath) return res.status(404).json({ error: "Artifact not found" });
+  res.sendFile(filePath);
 });
 
 app.post("/api/tasks/validate-cron", (req, res) => {
