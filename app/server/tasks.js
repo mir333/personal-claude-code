@@ -360,7 +360,7 @@ export async function executeTask(taskId, { payload } = {}) {
     // Run prompt
     let prompt = task.prompt;
     if (payload) {
-      prompt += `\n\n---\nThe following payload was received via webhook:\n${payload}\n---`;
+      prompt += `\n\n${payload}`;
     }
     await sendMessage(agent.id, prompt);
 
