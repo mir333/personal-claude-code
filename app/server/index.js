@@ -218,6 +218,19 @@ function requireAuth(req, res, next) {
   return res.status(401).json({ error: "Unauthorized" });
 }
 
+// --- Public webhook endpoint (no session auth, token-validated) ---
+app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit: "100kb" }), (req, res) => {
+  const { taskId, token } = req.params;
+  const task = getTaskByWebhookToken(taskId, token);
+  if (!task) return res.status(404).json({ error: "Not found" });
+  if (isRunning(taskId)) return res.status(409).json({ error: "Task is already running" });
+
+  const payload = req.body && typeof req.body === "string" && req.body.trim() ? req.body : null;
+  const triggered = triggerTask(taskId, payload ? { payload } : undefined);
+  if (!triggered) return res.status(409).json({ error: "Task is already running" });
+  res.json({ ok: true, message: "Task triggered via webhook" });
+});
+
 // Apply auth guard to all API routes (except auth/profile endpoints above)
 app.use("/api", requireAuth);
 
@@ -858,6 +871,9 @@ import {
   getNextRuns,
   startTaskScheduler,
   onRunComplete,
+  generateWebhookToken,
+  revokeWebhookToken,
+  getTaskByWebhookToken,
 } from "./tasks.js";
 
 app.get("/api/tasks", (req, res) => {
@@ -962,6 +978,22 @@ app.post("/api/tasks/validate-cron", (req, res) => {
   } else {
     res.json({ valid: false, error: result.error });
   }
+});
+
+// Webhook token management
+app.post("/api/tasks/:id/webhook-token", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  const token = generateWebhookToken(req.params.id);
+  const webhookUrl = `${req.protocol}://${req.get("host")}/api/webhooks/tasks/${req.params.id}/${token}`;
+  res.json({ webhookToken: token, webhookUrl });
+});
+
+app.delete("/api/tasks/:id/webhook-token", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  revokeWebhookToken(req.params.id);
+  res.status(204).end();
 });
 
 // SPA fallback (Express 5 requires named wildcard)
