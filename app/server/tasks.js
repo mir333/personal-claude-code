@@ -328,24 +328,40 @@ export function getAllRuns(profileId, limit = 50) {
 
 // --- Execution ---
 
-// Archive task-generated files (summary.md, etc.) from workspace to run storage
-function archiveOutputFiles(workspaceDir, outputDir) {
+// Save the agent's response text as summary.md, and also archive any
+// summary.md the agent may have written to the workspace.
+function archiveOutputFiles(workspaceDir, outputDir, assistantText) {
   const archived = [];
+  fs.mkdirSync(outputDir, { recursive: true });
+
   try {
-    // Look for summary.md in the workspace root
+    // Check if the agent wrote a summary.md into the workspace
     const summaryPath = path.join(workspaceDir, "summary.md");
     if (fs.existsSync(summaryPath)) {
-      fs.mkdirSync(outputDir, { recursive: true });
       const destPath = path.join(outputDir, "summary.md");
       fs.copyFileSync(summaryPath, destPath);
       const stat = fs.statSync(destPath);
       archived.push({ name: "summary.md", size: stat.size });
       // Remove from workspace after archiving
       fs.unlinkSync(summaryPath);
+      return archived;
     }
   } catch (err) {
-    console.error(`[tasks] Failed to archive output files:`, err.message);
+    console.error(`[tasks] Failed to archive workspace summary.md:`, err.message);
   }
+
+  // Fallback: save the agent's own text response as summary.md
+  if (assistantText && assistantText.trim()) {
+    try {
+      const destPath = path.join(outputDir, "summary.md");
+      fs.writeFileSync(destPath, assistantText);
+      const stat = fs.statSync(destPath);
+      archived.push({ name: "summary.md", size: stat.size });
+    } catch (err) {
+      console.error(`[tasks] Failed to write fallback summary.md:`, err.message);
+    }
+  }
+
   return archived;
 }
 
@@ -414,8 +430,8 @@ export async function executeTask(taskId, { payload, runId } = {}) {
       .map((e) => e.text)
       .join("");
 
-    // Copy summary.md (and other output files) from workspace to run storage
-    const outputFiles = archiveOutputFiles(task.workingDirectory, outputDir);
+    // Archive summary from workspace, or fall back to agent's text response
+    const outputFiles = archiveOutputFiles(task.workingDirectory, outputDir, assistantTexts);
 
     // Persist
     const runEntry = {
