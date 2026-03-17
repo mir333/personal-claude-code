@@ -63,6 +63,7 @@ const server = createServer(app);
 const bootId = crypto.randomUUID();
 
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD;
+const BASE_URL_PROTOCOL = process.env.BASE_URL_PROTOCOL || "https";
 
 app.use(express.json());
 
@@ -228,7 +229,7 @@ app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit
   const payload = req.body && typeof req.body === "string" && req.body.trim() ? req.body : null;
   const result = triggerTask(taskId, payload ? { payload } : undefined);
   if (!result) return res.status(409).json({ error: "Task is already running" });
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
   const summaryUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${token}/runs/${result.runId}/artifacts/summary.md`;
   res.json({ ok: true, message: "Task triggered via webhook", runId: result.runId, summaryUrl });
 });
@@ -985,7 +986,7 @@ app.post("/api/tasks/:id/trigger", (req, res) => {
   if (!task) return res.status(404).json({ error: "Task not found" });
   const result = triggerTask(req.params.id);
   if (!result) return res.status(409).json({ error: "Task is already running" });
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
   const summaryUrl = `${baseUrl}/api/tasks/${req.params.id}/runs/${result.runId}/artifacts/summary.md`;
   res.json({ ok: true, message: "Task triggered", runId: result.runId, summaryUrl });
 });
@@ -1034,7 +1035,7 @@ app.post("/api/tasks/:id/webhook-token", (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "Task not found" });
   const token = generateWebhookToken(req.params.id);
-  const webhookUrl = `${req.protocol}://${req.get("host")}/api/webhooks/tasks/${req.params.id}/${token}`;
+  const webhookUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}/api/webhooks/tasks/${req.params.id}/${token}`;
   res.json({ webhookToken: token, webhookUrl });
 });
 
