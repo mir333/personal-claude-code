@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import cronParser from "cron-parser";
+import { CronExpressionParser } from "cron-parser";
 import { getProfilePaths, listProfiles } from "./profiles.js";
 import {
   buildCloneUrl,
@@ -103,7 +103,7 @@ function saveRunDetail(profileId, scheduleId, runId, detail) {
 
 export function computeNextRun(cronExpression) {
   try {
-    const interval = cronParser.parseExpression(cronExpression);
+    const interval = CronExpressionParser.parse(cronExpression);
     return interval.next().getTime();
   } catch {
     return null;
@@ -112,7 +112,7 @@ export function computeNextRun(cronExpression) {
 
 export function validateCron(cronExpression) {
   try {
-    cronParser.parseExpression(cronExpression);
+    CronExpressionParser.parse(cronExpression);
     return { valid: true };
   } catch (err) {
     return { valid: false, error: err.message };
@@ -121,7 +121,7 @@ export function validateCron(cronExpression) {
 
 export function getNextRuns(cronExpression, count = 3) {
   try {
-    const interval = cronParser.parseExpression(cronExpression);
+    const interval = CronExpressionParser.parse(cronExpression);
     const runs = [];
     for (let i = 0; i < count; i++) {
       runs.push(interval.next().getTime());
