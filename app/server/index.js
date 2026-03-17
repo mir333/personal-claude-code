@@ -231,8 +231,41 @@ app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit
   const result = triggerTask(taskId, payload ? { payload } : undefined);
   if (!result) return res.status(409).json({ error: "Task is already running" });
   const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
-  const summaryUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${token}/runs/${result.runId}/artifacts/summary.md`;
-  res.json({ ok: true, message: "Task triggered via webhook", runId: result.runId, summaryUrl });
+  const summaryUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${token}/runs/${result.runId}/summary`;
+  res.json({ ok: true, message: "Task triggered via webhook", runId: result.runId, summaryUrl, summaryFilename: result.summaryFilename });
+});
+
+// Public summary endpoint via webhook token — serves from .claude-tasks/ in workspace
+app.get("/api/webhooks/tasks/:taskId/:token/runs/:runId/summary", (req, res) => {
+  const { taskId, token, runId } = req.params;
+  const task = getTaskByWebhookToken(taskId, token);
+  if (!task) return res.status(404).json({ error: "Not found" });
+
+  // Check if the task is still running
+  if (isRunning(taskId)) {
+    return res.status(202).json({
+      error: "Task is still running",
+      message: "The task has not completed yet. Please retry after the task finishes.",
+      running: true,
+    });
+  }
+
+  // Look up the summaryFilename from the run entry
+  const detail = getRunDetail(taskId, runId);
+  if (!detail || !detail.summaryFilename) {
+    // Fallback to archived summary.md
+    const filePath = getRunArtifactPath(taskId, runId, "summary.md");
+    if (!filePath) return res.status(404).json({ error: "Summary not found" });
+    return res.sendFile(filePath);
+  }
+
+  // Try .claude-tasks/ first, then fall back to archive
+  const wsPath = getWorkspaceSummaryPath(taskId, detail.summaryFilename);
+  if (wsPath) return res.sendFile(wsPath);
+
+  const filePath = getRunArtifactPath(taskId, runId, "summary.md");
+  if (!filePath) return res.status(404).json({ error: "Summary not found" });
+  res.sendFile(filePath);
 });
 
 // Public artifact access via webhook token (no session required)
@@ -907,6 +940,7 @@ import {
   getTaskByWebhookToken,
   getRunArtifacts,
   getRunArtifactPath,
+  getWorkspaceSummaryPath,
 } from "./tasks.js";
 
 app.get("/api/tasks", (req, res) => {
@@ -995,8 +1029,8 @@ app.post("/api/tasks/:id/trigger", (req, res) => {
   const result = triggerTask(req.params.id);
   if (!result) return res.status(409).json({ error: "Task is already running" });
   const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
-  const summaryUrl = `${baseUrl}/api/tasks/${req.params.id}/runs/${result.runId}/artifacts/summary.md`;
-  res.json({ ok: true, message: "Task triggered", runId: result.runId, summaryUrl });
+  const summaryUrl = `${baseUrl}/api/tasks/${req.params.id}/runs/${result.runId}/summary`;
+  res.json({ ok: true, message: "Task triggered", runId: result.runId, summaryUrl, summaryFilename: result.summaryFilename });
 });
 
 app.post("/api/tasks/:id/stop", (req, res) => {
@@ -1022,6 +1056,24 @@ app.get("/api/tasks/:id/runs/:runId", (req, res) => {
   const detail = getRunDetail(req.params.id, req.params.runId);
   if (!detail) return res.status(404).json({ error: "Run not found" });
   res.json(detail);
+});
+
+// Authenticated summary endpoint — serves from .claude-tasks/ in workspace (with fallback)
+app.get("/api/tasks/:id/runs/:runId/summary", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+
+  // Look up the summaryFilename from the run detail
+  const detail = getRunDetail(req.params.id, req.params.runId);
+  if (detail?.summaryFilename) {
+    const wsPath = getWorkspaceSummaryPath(req.params.id, detail.summaryFilename);
+    if (wsPath) return res.sendFile(wsPath);
+  }
+
+  // Fallback to archived summary.md
+  const filePath = getRunArtifactPath(req.params.id, req.params.runId, "summary.md");
+  if (!filePath) return res.status(404).json({ error: "Summary not found" });
+  res.sendFile(filePath);
 });
 
 app.get("/api/tasks/:id/runs/:runId/artifacts", (req, res) => {

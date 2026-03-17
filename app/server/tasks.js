@@ -12,6 +12,58 @@ import {
   unsubscribeAgent,
 } from "./agents.js";
 const SUMMARY_INSTRUCTION = `\n\n---\n**IMPORTANT:** After completing your task, you MUST create a markdown file called \`summary.md\` in the current working directory with a complete summary of your findings, analysis, and results. All output files must be saved to the current working directory (the connected workspace).`;
+
+// --- .claude-tasks helpers ---
+
+function getClaudeTasksDir(workspaceDir) {
+  return path.join(workspaceDir, ".claude-tasks");
+}
+
+function generateSummaryFilename(taskName, runId) {
+  const slug = taskName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 50);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return `${slug}-${timestamp}-${runId.slice(0, 8)}.md`;
+}
+
+/**
+ * Persist the task result to .claude-tasks/ in the connected workspace.
+ * This is NOT done by the LLM — it's a programmatic function that picks up
+ * the last assistant message from the conversation and saves it as a file.
+ */
+function persistSummaryToWorkspace(workspaceDir, filename, conversation, assistantText) {
+  const claudeTasksDir = getClaudeTasksDir(workspaceDir);
+  fs.mkdirSync(claudeTasksDir, { recursive: true });
+
+  const destPath = path.join(claudeTasksDir, filename);
+
+  // Strategy 1: If the agent wrote a summary.md to the workspace, use that
+  try {
+    const agentSummaryPath = path.join(workspaceDir, "summary.md");
+    if (fs.existsSync(agentSummaryPath)) {
+      fs.copyFileSync(agentSummaryPath, destPath);
+      fs.unlinkSync(agentSummaryPath); // Clean up from workspace root
+      return destPath;
+    }
+  } catch (err) {
+    console.error(`[tasks] Failed to copy agent summary.md:`, err.message);
+  }
+
+  // Strategy 2: Pick up the last assistant message from the conversation and save it
+  if (assistantText && assistantText.trim()) {
+    try {
+      fs.writeFileSync(destPath, assistantText);
+      return destPath;
+    } catch (err) {
+      console.error(`[tasks] Failed to write summary to .claude-tasks/:`, err.message);
+    }
+  }
+
+  return null;
+}
 // --- In-memory state ---
 const tasks = new Map(); // taskId -> Task
 const runningJobs = new Map(); // taskId -> { agentId, aborted }
@@ -329,37 +381,21 @@ export function getAllRuns(profileId, limit = 50) {
 
 // --- Execution ---
 
-// Save the agent's response text as summary.md, and also archive any
-// summary.md the agent may have written to the workspace.
-function archiveOutputFiles(workspaceDir, outputDir, assistantText) {
+// Archive output files into the run output directory.
+// The primary summary is already persisted to .claude-tasks/ by persistSummaryToWorkspace.
+// This function creates a copy in the archive dir and records file metadata.
+function archiveOutputFiles(outputDir, claudeTasksSummaryPath) {
   const archived = [];
   fs.mkdirSync(outputDir, { recursive: true });
 
-  try {
-    // Check if the agent wrote a summary.md into the workspace
-    const summaryPath = path.join(workspaceDir, "summary.md");
-    if (fs.existsSync(summaryPath)) {
-      const destPath = path.join(outputDir, "summary.md");
-      fs.copyFileSync(summaryPath, destPath);
-      const stat = fs.statSync(destPath);
-      archived.push({ name: "summary.md", size: stat.size });
-      // Remove from workspace after archiving
-      fs.unlinkSync(summaryPath);
-      return archived;
-    }
-  } catch (err) {
-    console.error(`[tasks] Failed to archive workspace summary.md:`, err.message);
-  }
-
-  // Fallback: save the agent's own text response as summary.md
-  if (assistantText && assistantText.trim()) {
+  if (claudeTasksSummaryPath && fs.existsSync(claudeTasksSummaryPath)) {
     try {
       const destPath = path.join(outputDir, "summary.md");
-      fs.writeFileSync(destPath, assistantText);
+      fs.copyFileSync(claudeTasksSummaryPath, destPath);
       const stat = fs.statSync(destPath);
       archived.push({ name: "summary.md", size: stat.size });
     } catch (err) {
-      console.error(`[tasks] Failed to write fallback summary.md:`, err.message);
+      console.error(`[tasks] Failed to archive summary to output dir:`, err.message);
     }
   }
 
@@ -391,6 +427,9 @@ export async function executeTask(taskId, { payload, runId } = {}) {
   if (!runId) runId = crypto.randomUUID();
   const conversation = [];
 
+  // Generate the target summary filename at the beginning of execution
+  const summaryFilename = generateSummaryFilename(task.name, runId);
+
   runningJobs.set(taskId, { agentId: null, aborted: false });
   const startedAt = Date.now();
   let agentId = null;
@@ -398,7 +437,7 @@ export async function executeTask(taskId, { payload, runId } = {}) {
   // Output directory for archiving task-generated files
   const outputDir = getRunOutputDir(task.profileId, taskId, runId);
 
-  console.log(`[tasks] Starting run ${runId} for task "${task.name}" (${taskId})`);
+  console.log(`[tasks] Starting run ${runId} for task "${task.name}" (${taskId}), summary file: ${summaryFilename}`);
 
   try {
     // Verify working directory exists
@@ -424,7 +463,7 @@ export async function executeTask(taskId, { payload, runId } = {}) {
     subscribeAgent(agent.id, listener);
 
     // Build prompt — always instruct agent to save a summary file in the workspace
-    let prompt = payload ? `${task.prompt}\n\n${payload}${SUMMARY_INSTRUCTION}`:`${task.prompt}${SUMMARY_INSTRUCTION}`;
+    let prompt = payload ? `${task.prompt}\n\n${payload}${SUMMARY_INSTRUCTION}` : `${task.prompt}${SUMMARY_INSTRUCTION}`;
     await sendMessage(agent.id, prompt);
 
     // Check if this task was user-aborted (sendMessage swallows AbortError)
@@ -439,8 +478,13 @@ export async function executeTask(taskId, { payload, runId } = {}) {
       .map((e) => e.text)
       .join("");
 
-    // Archive summary from workspace, or fall back to agent's text response
-    const outputFiles = archiveOutputFiles(task.workingDirectory, outputDir, assistantTexts);
+    // Persist summary to .claude-tasks/ in the connected workspace (programmatic, not LLM)
+    const claudeTasksSummaryPath = persistSummaryToWorkspace(
+      task.workingDirectory, summaryFilename, conversation, assistantTexts
+    );
+
+    // Also archive to the run output directory
+    const outputFiles = archiveOutputFiles(outputDir, claudeTasksSummaryPath);
 
     // Persist
     const runEntry = {
@@ -455,6 +499,7 @@ export async function executeTask(taskId, { payload, runId } = {}) {
       error: wasAborted ? "Task stopped by user" : null,
       resultSummary: assistantTexts.slice(0, 500) || null,
       outputFiles: outputFiles.length > 0 ? outputFiles : null,
+      summaryFilename, // Store the filename for summary link resolution
     };
 
     saveRunDetail(task.profileId, taskId, runId, {
@@ -481,9 +526,9 @@ export async function executeTask(taskId, { payload, runId } = {}) {
     console.log(`[tasks] Run ${runId} ${wasAborted ? "interrupted by user" : "completed successfully"} for "${task.name}"`);
 
     // Notify listeners
-    for (const listener of runCompleteListeners) {
+    for (const cb of runCompleteListeners) {
       try {
-        listener({ taskId, runId, task: { ...task }, runEntry });
+        cb({ taskId, runId, task: { ...task }, runEntry });
       } catch {}
     }
   } catch (err) {
@@ -505,6 +550,7 @@ export async function executeTask(taskId, { payload, runId } = {}) {
       error: wasAborted ? "Task stopped by user" : err.message,
       resultSummary: null,
       outputFiles: null,
+      summaryFilename,
     };
     appendRunEntry(task.profileId, taskId, runEntry);
 
@@ -523,9 +569,9 @@ export async function executeTask(taskId, { payload, runId } = {}) {
     }
 
     // Notify listeners
-    for (const listener of runCompleteListeners) {
+    for (const cb of runCompleteListeners) {
       try {
-        listener({ taskId, runId, task: { ...task }, runEntry });
+        cb({ taskId, runId, task: { ...task }, runEntry });
       } catch {}
     }
   } finally {
@@ -539,9 +585,11 @@ export function triggerTask(taskId, opts) {
   if (runningJobs.has(taskId)) return null;
   // Generate runId upfront so callers can build artifact URLs
   const runId = crypto.randomUUID();
+  // Generate summary filename upfront so callers can build summary URLs
+  const summaryFilename = generateSummaryFilename(task.name, runId);
   // Fire async, don't await
   executeTask(taskId, { ...opts, runId });
-  return { runId };
+  return { runId, summaryFilename };
 }
 
 export function isRunning(taskId) {
@@ -638,6 +686,20 @@ export function getRunArtifactPath(taskId, runId, filename) {
   // Sanitize filename to prevent path traversal
   const safe = path.basename(filename);
   const filePath = path.join(getRunOutputDir(task.profileId, taskId, runId), safe);
+  if (!fs.existsSync(filePath)) return null;
+  return filePath;
+}
+
+/**
+ * Get the summary file path from the .claude-tasks/ folder in the workspace.
+ * This is the primary location where summaries are persisted.
+ */
+export function getWorkspaceSummaryPath(taskId, summaryFilename) {
+  const task = tasks.get(taskId);
+  if (!task) return null;
+  if (!summaryFilename) return null;
+  const safe = path.basename(summaryFilename);
+  const filePath = path.join(getClaudeTasksDir(task.workingDirectory), safe);
   if (!fs.existsSync(filePath)) return null;
   return filePath;
 }

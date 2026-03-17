@@ -128,7 +128,7 @@ export default function TaskDetail({
   function handleOpenSummary(e, run) {
     e.stopPropagation();
     setSummaryDialog({ open: true, content: null, loading: true, runDate: new Date(run.startedAt).toLocaleString() });
-    fetch(`/api/tasks/${task.id}/runs/${run.id}/artifacts/summary.md`)
+    fetch(`/api/tasks/${task.id}/runs/${run.id}/summary`)
       .then((r) => {
         if (!r.ok) throw new Error("Summary not found");
         return r.text();
