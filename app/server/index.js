@@ -218,7 +218,7 @@ function requireAuth(req, res, next) {
   return res.status(401).json({ error: "Unauthorized" });
 }
 
-// --- Public webhook endpoint (no session auth, token-validated) ---
+// --- Public webhook endpoints (no session auth, token-validated) ---
 app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit: "100kb" }), (req, res) => {
   const { taskId, token } = req.params;
   const task = getTaskByWebhookToken(taskId, token);
@@ -229,8 +229,28 @@ app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit
   const result = triggerTask(taskId, payload ? { payload } : undefined);
   if (!result) return res.status(409).json({ error: "Task is already running" });
   const baseUrl = `${req.protocol}://${req.get("host")}`;
-  const summaryUrl = `${baseUrl}/api/tasks/${taskId}/runs/${result.runId}/artifacts/summary.md`;
+  const summaryUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${token}/runs/${result.runId}/artifacts/summary.md`;
   res.json({ ok: true, message: "Task triggered via webhook", runId: result.runId, summaryUrl });
+});
+
+// Public artifact access via webhook token (no session required)
+app.get("/api/webhooks/tasks/:taskId/:token/runs/:runId/artifacts/:filename", (req, res) => {
+  const { taskId, token, runId, filename } = req.params;
+  const task = getTaskByWebhookToken(taskId, token);
+  if (!task) return res.status(404).json({ error: "Not found" });
+
+  // Check if the task is still running (artifact may not exist yet)
+  if (isRunning(taskId)) {
+    return res.status(202).json({
+      error: "Task is still running",
+      message: "The task has not completed yet. Please retry after the task finishes.",
+      running: true,
+    });
+  }
+
+  const filePath = getRunArtifactPath(taskId, runId, filename);
+  if (!filePath) return res.status(404).json({ error: "Artifact not found" });
+  res.sendFile(filePath);
 });
 
 // Apply auth guard to all API routes (except auth/profile endpoints above)
