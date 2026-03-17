@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { flushSync } from "react-dom";
-import { Send, Square, Trash2, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2 } from "lucide-react";
+import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2 } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -33,7 +33,7 @@ export default function App() {
   const [interactiveQuestions, setInteractiveQuestions] = useState({});
   const [pendingQuestions, setPendingQuestions] = useState({});
   const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
-  const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> { text } or null
+  const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> [{ text }, ...] (FIFO queue)
   const terminalDataRef = useRef(null);
   const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
@@ -77,18 +77,28 @@ export default function App() {
       }
 
       if (type === "message_queued") {
-        setQueuedMessages((prev) => ({ ...prev, [agentId]: { text: rest.text } }));
+        setQueuedMessages((prev) => ({ ...prev, [agentId]: [...(prev[agentId] || []), { text: rest.text }] }));
         return;
       }
 
       if (type === "message_dequeued") {
-        // Pending message is now being processed — promote to regular user message
-        setQueuedMessages((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
+        // Pending message is now being processed — promote the first pending_user to regular user message
+        setQueuedMessages((prev) => {
+          const queue = prev[agentId] || [];
+          const remaining = queue.slice(1);
+          if (remaining.length === 0) { const next = { ...prev }; delete next[agentId]; return next; }
+          return { ...prev, [agentId]: remaining };
+        });
         setConversations((prev) => {
           const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
-          const entries = data.entries.map((m) =>
-            m.type === "pending_user" ? { type: "user", text: m.text } : m
-          );
+          let promoted = false;
+          const entries = data.entries.map((m) => {
+            if (!promoted && m.type === "pending_user") {
+              promoted = true;
+              return { type: "user", text: m.text };
+            }
+            return m;
+          });
           return { ...prev, [agentId]: { ...data, entries } };
         });
         return;
@@ -463,11 +473,10 @@ export default function App() {
     const isBusy = agent?.status === "busy";
 
     if (isBusy) {
-      // Replace any existing pending message in the conversation
+      // Append to the queue — multiple pending messages allowed
       setConversations((prev) => {
         const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
-        const entries = data.entries.filter((m) => m.type !== "pending_user");
-        return { ...prev, [selectedAgentId]: { ...data, entries: [...entries, { type: "pending_user", text }] } };
+        return { ...prev, [selectedAgentId]: { ...data, entries: [...data.entries, { type: "pending_user", text }] } };
       });
     } else {
       setConversations((prev) => {
@@ -478,17 +487,39 @@ export default function App() {
     send({ type: "message", agentId: selectedAgentId, text });
   }
 
-  function handleCancelPending() {
+  function handleCancelPending(index) {
     if (!selectedAgentId) return;
-    // Remove pending message from conversation UI
-    setConversations((prev) => {
-      const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
-      const entries = data.entries.filter((m) => m.type !== "pending_user");
-      return { ...prev, [selectedAgentId]: { ...data, entries } };
-    });
-    setQueuedMessages((prev) => { const next = { ...prev }; delete next[selectedAgentId]; return next; });
-    // Tell server to abort so the pending message is cleared server-side too
-    send({ type: "cancel_pending", agentId: selectedAgentId });
+    if (index != null) {
+      // Cancel a single queued message by its index among pending_user entries
+      setConversations((prev) => {
+        const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
+        let pendingIdx = 0;
+        const entries = data.entries.filter((m) => {
+          if (m.type === "pending_user") {
+            if (pendingIdx === index) { pendingIdx++; return false; }
+            pendingIdx++;
+          }
+          return true;
+        });
+        return { ...prev, [selectedAgentId]: { ...data, entries } };
+      });
+      setQueuedMessages((prev) => {
+        const queue = prev[selectedAgentId] || [];
+        const remaining = queue.filter((_, i) => i !== index);
+        if (remaining.length === 0) { const next = { ...prev }; delete next[selectedAgentId]; return next; }
+        return { ...prev, [selectedAgentId]: remaining };
+      });
+      send({ type: "cancel_pending_one", agentId: selectedAgentId, index });
+    } else {
+      // Cancel all pending messages
+      setConversations((prev) => {
+        const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
+        const entries = data.entries.filter((m) => m.type !== "pending_user");
+        return { ...prev, [selectedAgentId]: { ...data, entries } };
+      });
+      setQueuedMessages((prev) => { const next = { ...prev }; delete next[selectedAgentId]; return next; });
+      send({ type: "cancel_pending", agentId: selectedAgentId });
+    }
   }
 
   function handleStop() {
@@ -508,6 +539,19 @@ export default function App() {
             [selectedAgentId]: { ...data, entries: [...data.entries, { type: "context_cleared", timestamp: Date.now() }], total: data.total + 1 },
           };
         });
+      }
+    } catch {}
+  }
+
+  async function handleDeleteHistory() {
+    if (!selectedAgentId) return;
+    try {
+      const res = await fetch(`/api/agents/${selectedAgentId}/history`, { method: "DELETE" });
+      if (res.ok) {
+        setConversations((prev) => ({
+          ...prev,
+          [selectedAgentId]: { entries: [], total: 0, hasMore: false },
+        }));
       }
     } catch {}
   }
@@ -725,13 +769,13 @@ export default function App() {
                       <div key={gi} className="mb-2 text-sm">
                         {msg.type === "user" && (
                           <div
-                            className="max-w-lg bg-secondary text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto"
+                            className="max-w-full md:max-w-lg bg-secondary text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto"
                           >
                             <Markdown>{msg.text}</Markdown>
                           </div>
                         )}
                         {msg.type === "assistant_stream" && (
-                          <div className="group/msg relative max-w-3/4 bg-card border border-border rounded-lg px-4 py-2">
+                          <div className="group/msg relative max-w-full md:max-w-3/4 bg-card border border-border rounded-lg px-4 py-2">
                             <button
                               className="absolute top-1.5 right-1.5 opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
                               title="Copy markdown"
@@ -784,28 +828,36 @@ export default function App() {
                             <div className="flex-1 border-t border-dashed border-yellow-500/50" />
                           </div>
                         )}
-                        {msg.type === "pending_user" && (
-                          <div className="max-w-lg ml-auto">
-                            <div
-                              className="bg-secondary/60 text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto border border-dashed border-secondary-foreground/20"
-                            >
-                              <Markdown>{msg.text}</Markdown>
-                            </div>
-                            <div className="flex items-center justify-end gap-2 mt-1">
-                              <Clock className="h-3 w-3 text-muted-foreground animate-pulse" />
-                              <span className="text-[11px] text-muted-foreground">Queued — will send when agent finishes</span>
-                              <button
-                                onClick={handleCancelPending}
-                                className="text-[11px] text-destructive hover:text-destructive/80 flex items-center gap-0.5 transition-colors"
+                        {msg.type === "pending_user" && (() => {
+                          const pendingEntries = selectedConversation.filter((m) => m.type === "pending_user");
+                          const pendingIdx = pendingEntries.indexOf(msg);
+                          const queuePos = pendingIdx + 1;
+                          const totalPending = pendingEntries.length;
+                          return (
+                            <div className="max-w-full md:max-w-lg ml-auto">
+                              <div
+                                className="bg-secondary/60 text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto border border-dashed border-secondary-foreground/20"
                               >
-                                <X className="h-3 w-3" />
-                                Cancel
-                              </button>
+                                <Markdown>{msg.text}</Markdown>
+                              </div>
+                              <div className="flex items-center justify-end gap-2 mt-1">
+                                <Clock className="h-3 w-3 text-muted-foreground animate-pulse" />
+                                <span className="text-[11px] text-muted-foreground">
+                                  Queued{totalPending > 1 ? ` (${queuePos}/${totalPending})` : ""} — will send when agent finishes
+                                </span>
+                                <button
+                                  onClick={() => handleCancelPending(pendingIdx)}
+                                  className="text-[11px] text-destructive hover:text-destructive/80 flex items-center gap-0.5 transition-colors"
+                                >
+                                  <X className="h-3 w-3" />
+                                  Cancel
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          );
+                        })()}
                         {msg.type === "error" && (
-                          <div className="max-w-3/4 bg-destructive/20 text-destructive rounded-lg px-4 py-2">
+                          <div className="max-w-full md:max-w-3/4 bg-destructive/20 text-destructive rounded-lg px-4 py-2">
                             {msg.message}
                           </div>
                         )}
@@ -815,7 +867,7 @@ export default function App() {
                   <div ref={messagesEndRef} />
                 </ScrollArea>
                 <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
-                <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} />
+                <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} />
               </div>
             )}
             {terminalOpen && (
@@ -845,7 +897,7 @@ export default function App() {
   );
 }
 
-function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions }) {
+function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions }) {
   const [text, setText] = useState("");
   const [attachedFiles, setAttachedFiles] = useState([]);
   const textareaRef = useRef(null);
@@ -939,6 +991,17 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           className="text-muted-foreground hover:text-yellow-500 shrink-0 hidden md:inline-flex"
         >
           <Trash2 className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => { if (confirm("Delete entire chat history? This cannot be undone.")) onDeleteHistory(); }}
+          disabled={!connected}
+          title="Delete chat history"
+          className="text-muted-foreground hover:text-red-500 shrink-0 hidden md:inline-flex"
+        >
+          <Eraser className="h-4 w-4" />
         </Button>
         <Button
           type="button"
@@ -1055,6 +1118,17 @@ function ChatInput({ onSend, onStop, onClearContext, onReconnect, connected, isB
           className="text-muted-foreground hover:text-yellow-500 h-8 w-8"
         >
           <Trash2 className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => { if (confirm("Delete entire chat history? This cannot be undone.")) onDeleteHistory(); }}
+          disabled={!connected}
+          title="Delete chat history"
+          className="text-muted-foreground hover:text-red-500 h-8 w-8"
+        >
+          <Eraser className="h-4 w-4" />
         </Button>
         <Button
           type="button"

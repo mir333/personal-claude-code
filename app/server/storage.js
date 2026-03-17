@@ -57,6 +57,10 @@ export function saveConversation(workDir, entries) {
   renameSync(tmpPath, filePath);
 }
 
+export function clearConversation(workDir) {
+  saveConversation(workDir, []);
+}
+
 export function appendEntry(workDir, entry) {
   const entries = loadConversation(workDir);
   entries.push(entry);

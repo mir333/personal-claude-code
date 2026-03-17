@@ -15,6 +15,7 @@ import {
   abortAgent,
   getHistory,
   clearContext,
+  clearHistory,
   sendMessage,
   setInteractiveQuestions,
   answerQuestion,
@@ -590,6 +591,12 @@ app.post("/api/agents/:id/clear-context", (req, res) => {
   res.json({ ok: true });
 });
 
+app.delete("/api/agents/:id/history", (req, res) => {
+  const ok = clearHistory(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Agent not found" });
+  res.json({ ok: true });
+});
+
 app.get("/api/agents/:id/history", (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
@@ -1073,7 +1080,7 @@ server.on("upgrade", (request, socket, head) => {
 wss.on("connection", (ws) => {
   const connectionTerminals = new Set(); // track terminals opened by this connection
   const connectionListeners = new Map(); // agentId -> listener fn
-  const pendingMessages = new Map(); // agentId -> queued message text (last one wins)
+  const pendingMessages = new Map(); // agentId -> Array of queued message texts (FIFO)
 
   // Send boot ID so clients can detect server restarts
   ws.send(JSON.stringify({ type: "welcome", bootId }));
@@ -1088,7 +1095,7 @@ wss.on("connection", (ws) => {
     }
 
     if (data.type === "abort" && data.agentId) {
-      // Clear any queued pending message when aborting
+      // Clear all queued pending messages when aborting
       pendingMessages.delete(data.agentId);
       abortAgent(data.agentId);
       return;
@@ -1096,6 +1103,15 @@ wss.on("connection", (ws) => {
 
     if (data.type === "cancel_pending" && data.agentId) {
       pendingMessages.delete(data.agentId);
+      return;
+    }
+
+    if (data.type === "cancel_pending_one" && data.agentId && data.index != null) {
+      const queue = pendingMessages.get(data.agentId);
+      if (queue && data.index >= 0 && data.index < queue.length) {
+        queue.splice(data.index, 1);
+        if (queue.length === 0) pendingMessages.delete(data.agentId);
+      }
       return;
     }
 
@@ -1142,16 +1158,21 @@ wss.on("connection", (ws) => {
     if (data.type === "message" && data.agentId && data.text) {
       const agent = getAgent(data.agentId);
 
-      // If agent is busy, queue the message (last one wins) instead of rejecting
+      // If agent is busy, push message onto the FIFO queue
       if (agent && agent.status === "busy") {
-        pendingMessages.set(data.agentId, data.text);
+        let queue = pendingMessages.get(data.agentId);
+        if (!queue) {
+          queue = [];
+          pendingMessages.set(data.agentId, queue);
+        }
+        queue.push(data.text);
         if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: "message_queued", agentId: data.agentId, text: data.text }));
+          ws.send(JSON.stringify({ type: "message_queued", agentId: data.agentId, text: data.text, queueLength: queue.length }));
         }
         return;
       }
 
-      // Process message and then drain any queued follow-up
+      // Process message and then drain queued follow-ups in FIFO order
       async function processMessage(text) {
         // Evict any existing listener for this agent to prevent leaks
         const existingListener = connectionListeners.get(data.agentId);
@@ -1178,14 +1199,15 @@ wss.on("connection", (ws) => {
           connectionListeners.delete(data.agentId);
         }
 
-        // After message completes, check if there's a queued pending message
-        const queued = pendingMessages.get(data.agentId);
-        if (queued && ws.readyState === ws.OPEN) {
-          pendingMessages.delete(data.agentId);
-          // Notify client the pending message is now being sent
-          ws.send(JSON.stringify({ type: "message_dequeued", agentId: data.agentId, text: queued }));
-          // Process the queued message
-          await processMessage(queued);
+        // After message completes, drain the next queued message (FIFO)
+        const queue = pendingMessages.get(data.agentId);
+        if (queue && queue.length > 0 && ws.readyState === ws.OPEN) {
+          const next = queue.shift();
+          if (queue.length === 0) pendingMessages.delete(data.agentId);
+          // Notify client the next pending message is now being sent
+          ws.send(JSON.stringify({ type: "message_dequeued", agentId: data.agentId, text: next }));
+          // Process the next queued message
+          await processMessage(next);
         }
       }
 

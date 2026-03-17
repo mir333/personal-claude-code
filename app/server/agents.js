@@ -1,7 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { mkdirSync } from "fs";
-import { loadConversation, appendEntry, loadConversationSlice } from "./storage.js";
+import { loadConversation, appendEntry, loadConversationSlice, clearConversation } from "./storage.js";
 import { recordUsage } from "./usage.js";
 
 const agents = new Map();
@@ -82,6 +82,15 @@ export function clearContext(id) {
     type: "context_cleared",
     timestamp: Date.now(),
   });
+  return true;
+}
+
+export function clearHistory(id) {
+  const agent = agents.get(id);
+  if (!agent) return false;
+  agent.sessionId = null;
+  agent.history = [];
+  clearConversation(agent.workingDirectory);
   return true;
 }
 
