@@ -7,13 +7,14 @@ import {
   createAgent,
   sendMessage,
   deleteAgent,
+  abortAgent,
   subscribeAgent,
   unsubscribeAgent,
 } from "./agents.js";
 const SUMMARY_INSTRUCTION = `\n\n---\n**IMPORTANT:** After completing your task, you MUST create a markdown file called \`summary.md\` in the current working directory with a complete summary of your findings, analysis, and results. All output files must be saved to the current working directory (the connected workspace).`;
 // --- In-memory state ---
 const tasks = new Map(); // taskId -> Task
-const runningJobs = new Set(); // taskIds currently executing
+const runningJobs = new Map(); // taskId -> { agentId, aborted }
 let tickInterval = null;
 const runCompleteListeners = new Set(); // Set of callback functions
 
@@ -390,7 +391,7 @@ export async function executeTask(taskId, { payload, runId } = {}) {
   if (!runId) runId = crypto.randomUUID();
   const conversation = [];
 
-  runningJobs.add(taskId);
+  runningJobs.set(taskId, { agentId: null, aborted: false });
   const startedAt = Date.now();
   let agentId = null;
 
@@ -409,6 +410,10 @@ export async function executeTask(taskId, { payload, runId } = {}) {
     const agent = createAgent(`task-${task.name}-${runId}`, task.workingDirectory, task.profileId);
     agentId = agent.id;
 
+    // Store agentId in runningJobs so stopTask() can abort it
+    const job = runningJobs.get(taskId);
+    if (job) job.agentId = agent.id;
+
     // Disable interactive questions for task runs
     agent.interactiveQuestions = false;
 
@@ -421,6 +426,10 @@ export async function executeTask(taskId, { payload, runId } = {}) {
     // Build prompt — always instruct agent to save a summary file in the workspace
     let prompt = payload ? `${task.prompt}\n\n${payload}${SUMMARY_INSTRUCTION}`:`${task.prompt}${SUMMARY_INSTRUCTION}`;
     await sendMessage(agent.id, prompt);
+
+    // Check if this task was user-aborted (sendMessage swallows AbortError)
+    const jobState = runningJobs.get(taskId);
+    const wasAborted = jobState?.aborted === true;
 
     // Extract results
     unsubscribeAgent(agent.id, listener);
@@ -437,14 +446,14 @@ export async function executeTask(taskId, { payload, runId } = {}) {
     const runEntry = {
       id: runId,
       taskId,
-      status: "success",
+      status: wasAborted ? "interrupted" : "success",
       startedAt,
       completedAt: Date.now(),
       durationMs: Date.now() - startedAt,
       cost: doneEvent?.cost || 0,
       usage: doneEvent?.usage || null,
-      error: null,
-      resultSummary: assistantTexts.slice(0, 500),
+      error: wasAborted ? "Task stopped by user" : null,
+      resultSummary: assistantTexts.slice(0, 500) || null,
       outputFiles: outputFiles.length > 0 ? outputFiles : null,
     };
 
@@ -459,7 +468,7 @@ export async function executeTask(taskId, { payload, runId } = {}) {
 
     // Update task
     task.lastRunAt = Date.now();
-    task.lastRunStatus = "success";
+    task.lastRunStatus = wasAborted ? "interrupted" : "success";
     if (task.cronExpression) {
       task.nextRunAt = computeNextRun(task.cronExpression);
     }
@@ -469,7 +478,7 @@ export async function executeTask(taskId, { payload, runId } = {}) {
     deleteAgent(agent.id);
     agentId = null;
 
-    console.log(`[tasks] Run ${runId} completed successfully for "${task.name}"`);
+    console.log(`[tasks] Run ${runId} ${wasAborted ? "interrupted by user" : "completed successfully"} for "${task.name}"`);
 
     // Notify listeners
     for (const listener of runCompleteListeners) {
@@ -478,26 +487,29 @@ export async function executeTask(taskId, { payload, runId } = {}) {
       } catch {}
     }
   } catch (err) {
-    console.error(`[tasks] Run ${runId} failed for "${task.name}":`, err.message);
+    const jobState = runningJobs.get(taskId);
+    const wasAborted = jobState?.aborted === true;
 
-    // Record failed run
+    console.error(`[tasks] Run ${runId} ${wasAborted ? "interrupted" : "failed"} for "${task.name}":`, err.message);
+
+    // Record failed/interrupted run
     const runEntry = {
       id: runId,
       taskId,
-      status: "error",
+      status: wasAborted ? "interrupted" : "error",
       startedAt,
       completedAt: Date.now(),
       durationMs: Date.now() - startedAt,
       cost: 0,
       usage: null,
-      error: err.message,
+      error: wasAborted ? "Task stopped by user" : err.message,
       resultSummary: null,
       outputFiles: null,
     };
     appendRunEntry(task.profileId, taskId, runEntry);
 
     task.lastRunAt = Date.now();
-    task.lastRunStatus = "error";
+    task.lastRunStatus = wasAborted ? "interrupted" : "error";
     if (task.cronExpression) {
       task.nextRunAt = computeNextRun(task.cronExpression);
     }
@@ -534,6 +546,21 @@ export function triggerTask(taskId, opts) {
 
 export function isRunning(taskId) {
   return runningJobs.has(taskId);
+}
+
+export function stopTask(taskId) {
+  const job = runningJobs.get(taskId);
+  if (!job) return { stopped: false, reason: "not_running" };
+  if (!job.agentId) return { stopped: false, reason: "agent_not_ready" };
+
+  // Mark as user-aborted BEFORE aborting the agent.
+  // executeTask checks this flag after sendMessage returns.
+  job.aborted = true;
+
+  // Abort the agent's AbortController, causing sendMessage to exit
+  abortAgent(job.agentId);
+
+  return { stopped: true };
 }
 
 // --- Task scheduler lifecycle ---

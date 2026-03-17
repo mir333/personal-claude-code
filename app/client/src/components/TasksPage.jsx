@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Plus, ListTodo, CheckCircle, XCircle, Loader2, Pause, Play, Clock, BarChart3 } from "lucide-react";
+import { Plus, ListTodo, CheckCircle, XCircle, Loader2, Pause, Play, Clock, BarChart3, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,7 @@ export default function TasksPage() {
     deleteTask,
     toggleTask,
     triggerTask,
+    stopTask,
     fetchRuns,
     fetchRunDetail,
     fetchAllRuns,
@@ -157,6 +158,7 @@ export default function TasksPage() {
           onDelete={deleteTask}
           onToggle={handleToggle}
           onTrigger={triggerTask}
+          onStop={stopTask}
           onViewRun={handleViewRun}
           fetchRuns={fetchRuns}
           onGenerateWebhookToken={generateWebhookToken}
@@ -299,6 +301,20 @@ export default function TasksPage() {
                       ) : (
                         <Pause className="h-3.5 w-3.5" />
                       )}
+                    </button>
+                  )}
+
+                  {/* Stop button - shown when task is running */}
+                  {task.running && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        stopTask(task.id);
+                      }}
+                      className="p-1 rounded transition-colors shrink-0 text-red-500 hover:bg-red-500/10"
+                      title="Stop running task"
+                    >
+                      <Square className="h-3.5 w-3.5 fill-current" />
                     </button>
                   )}
                 </div>

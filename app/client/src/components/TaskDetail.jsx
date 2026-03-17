@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw, FileText, X } from "lucide-react";
+import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw, FileText, X, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -28,6 +28,7 @@ export default function TaskDetail({
   onDelete,
   onToggle,
   onTrigger,
+  onStop,
   onViewRun,
   fetchRuns,
   onGenerateWebhookToken,
@@ -36,6 +37,7 @@ export default function TaskDetail({
   const [runs, setRuns] = useState([]);
   const [runsLoading, setRunsLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState(null);
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [webhookLoading, setWebhookLoading] = useState(false);
@@ -70,6 +72,17 @@ export default function TaskDetail({
       alert(err.message || "Failed to run task");
     } finally {
       setTriggering(false);
+    }
+  }
+
+  async function handleStop() {
+    setStopping(true);
+    try {
+      await onStop(task.id);
+    } catch (err) {
+      alert(err.message || "Failed to stop task");
+    } finally {
+      setStopping(false);
     }
   }
 
@@ -253,20 +266,37 @@ export default function TaskDetail({
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 pl-10">
-          <Button
-            variant={isScheduled ? "outline" : "default"}
-            size="sm"
-            className="text-xs h-7"
-            onClick={handleTrigger}
-            disabled={triggering || task.running}
-          >
-            {triggering || task.running ? (
-              <Loader2 className="h-3 w-3 animate-spin mr-1" />
-            ) : (
-              <Play className="h-3 w-3 mr-1" />
-            )}
-            Run Now
-          </Button>
+          {task.running ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              className="text-xs h-7"
+              onClick={handleStop}
+              disabled={stopping}
+            >
+              {stopping ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : (
+                <Square className="h-3 w-3 mr-1 fill-current" />
+              )}
+              Stop
+            </Button>
+          ) : (
+            <Button
+              variant={isScheduled ? "outline" : "default"}
+              size="sm"
+              className="text-xs h-7"
+              onClick={handleTrigger}
+              disabled={triggering}
+            >
+              {triggering ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : (
+                <Play className="h-3 w-3 mr-1" />
+              )}
+              Run Now
+            </Button>
+          )}
           <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => onEdit(task)}>
             <Pencil className="h-3 w-3 mr-1" />
             Edit

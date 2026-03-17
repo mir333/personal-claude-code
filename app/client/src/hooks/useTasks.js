@@ -71,6 +71,15 @@ export function useTasks() {
     return data;
   }, []);
 
+  const stopTask = useCallback(async (id) => {
+    const res = await fetch(`/api/tasks/${id}/stop`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to stop task");
+    // Mark as not running locally for immediate UI feedback
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, running: false } : t)));
+    return data;
+  }, []);
+
   const fetchRuns = useCallback(async (taskId, limit = 20) => {
     const res = await fetch(`/api/tasks/${taskId}/runs?limit=${limit}`);
     if (!res.ok) return [];
@@ -124,6 +133,7 @@ export function useTasks() {
     deleteTask,
     toggleTask,
     triggerTask,
+    stopTask,
     fetchRuns,
     fetchRunDetail,
     fetchAllRuns,

@@ -893,6 +893,7 @@ import {
   deleteTask as deleteTaskData,
   toggleTask,
   triggerTask,
+  stopTask,
   isRunning,
   getRunHistory,
   getRunDetail,
@@ -996,6 +997,18 @@ app.post("/api/tasks/:id/trigger", (req, res) => {
   const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
   const summaryUrl = `${baseUrl}/api/tasks/${req.params.id}/runs/${result.runId}/artifacts/summary.md`;
   res.json({ ok: true, message: "Task triggered", runId: result.runId, summaryUrl });
+});
+
+app.post("/api/tasks/:id/stop", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  if (!isRunning(req.params.id)) return res.status(409).json({ error: "Task is not running" });
+
+  const result = stopTask(req.params.id);
+  if (!result.stopped) {
+    return res.status(409).json({ error: `Cannot stop task: ${result.reason}` });
+  }
+  res.json({ ok: true, message: "Task stop signal sent" });
 });
 
 app.get("/api/tasks/:id/runs", (req, res) => {
