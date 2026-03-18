@@ -257,16 +257,16 @@ app.get("/api/webhooks/tasks/:taskId/:token/runs/:runId/summary", (req, res) => 
     // Fallback to archived summary.md
     const filePath = getRunArtifactPath(taskId, runId, "summary.md");
     if (!filePath) return res.status(404).json({ error: "Summary not found" });
-    return res.sendFile(filePath);
+    return res.sendFile(filePath, { dotfiles: "allow" });
   }
 
   // Try .claude-tasks/ first, then fall back to archive
   const wsPath = getWorkspaceSummaryPath(taskId, detail.summaryFilename);
-  if (wsPath) return res.sendFile(wsPath);
+  if (wsPath) return res.sendFile(wsPath, { dotfiles: "allow" });
 
   const filePath = getRunArtifactPath(taskId, runId, "summary.md");
   if (!filePath) return res.status(404).json({ error: "Summary not found" });
-  res.sendFile(filePath);
+  res.sendFile(filePath, { dotfiles: "allow" });
 });
 
 // Public artifact access via webhook token (no session required)
@@ -286,7 +286,7 @@ app.get("/api/webhooks/tasks/:taskId/:token/runs/:runId/artifacts/:filename", (r
 
   const filePath = getRunArtifactPath(taskId, runId, filename);
   if (!filePath) return res.status(404).json({ error: "Artifact not found" });
-  res.sendFile(filePath);
+  res.sendFile(filePath, { dotfiles: "allow" });
 });
 
 // Apply auth guard to all API routes (except auth/profile endpoints above)
@@ -1071,13 +1071,13 @@ app.get("/api/tasks/:id/runs/:runId/summary", (req, res) => {
   const detail = getRunDetail(req.params.id, req.params.runId);
   if (detail?.summaryFilename) {
     const wsPath = getWorkspaceSummaryPath(req.params.id, detail.summaryFilename);
-    if (wsPath) return res.sendFile(wsPath);
+    if (wsPath) return res.sendFile(wsPath, { dotfiles: "allow" });
   }
 
   // Fallback to archived summary.md
   const filePath = getRunArtifactPath(req.params.id, req.params.runId, "summary.md");
   if (!filePath) return res.status(404).json({ error: "Summary not found" });
-  res.sendFile(filePath);
+  res.sendFile(filePath, { dotfiles: "allow" });
 });
 
 app.get("/api/tasks/:id/runs/:runId/artifacts", (req, res) => {
@@ -1092,7 +1092,7 @@ app.get("/api/tasks/:id/runs/:runId/artifacts/:filename", (req, res) => {
   if (!task) return res.status(404).json({ error: "Task not found" });
   const filePath = getRunArtifactPath(req.params.id, req.params.runId, req.params.filename);
   if (!filePath) return res.status(404).json({ error: "Artifact not found" });
-  res.sendFile(filePath);
+  res.sendFile(filePath, { dotfiles: "allow" });
 });
 
 app.post("/api/tasks/validate-cron", (req, res) => {

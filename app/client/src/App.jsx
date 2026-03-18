@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { flushSync } from "react-dom";
-import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2, Cpu, ChevronDown, Check } from "lucide-react";
+import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2, Cpu, ChevronDown, Check, ArrowDown } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -45,6 +45,8 @@ export default function App() {
   const scrollAreaRef = useRef(null);
   const isLoadingMoreRef = useRef(false);
   const didLoadMoreRef = useRef(false);
+  const autoScrollRef = useRef(true);
+  const [showScrollDown, setShowScrollDown] = useState(false);
   const lastEventIndexRef = useRef({});
   const reconnectHandlerRef = useRef(null);
 
@@ -382,6 +384,7 @@ export default function App() {
       didLoadMoreRef.current = false;
       return;
     }
+    if (!autoScrollRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [selectedConversation]);
 
@@ -438,8 +441,20 @@ export default function App() {
     if (!scrollEl) return;
 
     const handleScroll = () => {
+      // Load more when scrolled near top
       if (scrollEl.scrollTop < 50) {
         loadMoreMessages();
+      }
+      // Detect if user is near the bottom
+      const distanceFromBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+      if (distanceFromBottom < 60) {
+        // User scrolled back to bottom — re-enable auto-scroll
+        autoScrollRef.current = true;
+        setShowScrollDown(false);
+      } else {
+        // User scrolled up — disable auto-scroll
+        autoScrollRef.current = false;
+        setShowScrollDown(true);
       }
     };
 
@@ -473,10 +488,21 @@ export default function App() {
     setSelectedAgentId(id);
     setCurrentView("chat");
     setSidebarOpen(false);
+    autoScrollRef.current = true;
+    setShowScrollDown(false);
+  }
+
+  function handleScrollToBottom() {
+    autoScrollRef.current = true;
+    setShowScrollDown(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }
 
   function handleSend(text) {
     if (!selectedAgentId || !text.trim()) return;
+    // Re-enable auto-scroll when user sends a message
+    autoScrollRef.current = true;
+    setShowScrollDown(false);
     const agent = agents.find((a) => a.id === selectedAgentId);
     const isBusy = agent?.status === "busy";
 
@@ -763,7 +789,7 @@ export default function App() {
         ) : selectedAgentId ? (
           <>
             {!terminalOpen && (
-              <div className="flex flex-col min-h-0 flex-1">
+              <div className="flex flex-col min-h-0 flex-1 relative">
                 <ScrollArea ref={scrollAreaRef} className="flex-1 p-4">
                   {conversations[selectedAgentId]?.hasMore && (
                     <div className="flex justify-center py-2">
@@ -889,6 +915,15 @@ export default function App() {
                   })}
                   <div ref={messagesEndRef} />
                 </ScrollArea>
+                {showScrollDown && (
+                  <button
+                    onClick={handleScrollToBottom}
+                    className="absolute bottom-28 right-6 z-10 flex items-center justify-center h-8 w-8 rounded-full bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 transition-all animate-in fade-in slide-in-from-bottom-2 duration-200"
+                    title="Scroll to bottom"
+                  >
+                    <ArrowDown className="h-4 w-4" />
+                  </button>
+                )}
                 <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
                 <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} model={agentModels[selectedAgentId] || ""} onSetModel={handleSetModel} />
               </div>
