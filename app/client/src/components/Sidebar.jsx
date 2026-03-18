@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search, LogOut, Clock, RefreshCw } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search, LogOut, Clock, RefreshCw, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -408,6 +408,7 @@ export default function Sidebar({
   directories,
   findAgentByWorkDir,
   notificationsEnabled,
+  notificationsPermissionDenied,
   toggleNotifications,
   gitStatuses = {},
   profile = null,
@@ -491,12 +492,23 @@ export default function Sidebar({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="h-7 w-7 relative"
                 onClick={toggleNotifications}
-                title={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
+                title={
+                  notificationsEnabled && notificationsPermissionDenied
+                    ? "Notifications blocked by browser — click to retry"
+                    : notificationsEnabled
+                    ? "Disable notifications"
+                    : "Enable notifications"
+                }
               >
                 {notificationsEnabled ? (
-                  <BellRing className="h-3.5 w-3.5" />
+                  <>
+                    <BellRing className="h-3.5 w-3.5" />
+                    {notificationsPermissionDenied && (
+                      <AlertTriangle className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 text-yellow-500" />
+                    )}
+                  </>
                 ) : (
                   <BellOff className="h-3.5 w-3.5 text-muted-foreground" />
                 )}
@@ -538,12 +550,23 @@ export default function Sidebar({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 shrink-0"
+                className="h-8 w-8 shrink-0 relative"
                 onClick={toggleNotifications}
-                title={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
+                title={
+                  notificationsEnabled && notificationsPermissionDenied
+                    ? "Notifications blocked by browser — click to retry"
+                    : notificationsEnabled
+                    ? "Disable notifications"
+                    : "Enable notifications"
+                }
               >
                 {notificationsEnabled ? (
-                  <BellRing className="h-4 w-4" />
+                  <>
+                    <BellRing className="h-4 w-4" />
+                    {notificationsPermissionDenied && (
+                      <AlertTriangle className="absolute -top-0.5 -right-0.5 h-3 w-3 text-yellow-500" />
+                    )}
+                  </>
                 ) : (
                   <BellOff className="h-4 w-4 text-muted-foreground" />
                 )}

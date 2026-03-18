@@ -39,7 +39,7 @@ export default function App() {
   const terminalDataRef = useRef(null);
   const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
   const { directories, fetchDirectories } = useWorkspace();
-  const { enabled: notificationsEnabled, toggle: toggleNotifications, notify } = useNotifications();
+  const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
   const messagesEndRef = useRef(null);
   const scrollAreaRef = useRef(null);
@@ -750,6 +750,7 @@ export default function App() {
           directories={directories}
           findAgentByWorkDir={findAgentByWorkDir}
           notificationsEnabled={notificationsEnabled}
+          notificationsPermissionDenied={notificationsPermissionDenied}
           toggleNotifications={toggleNotifications}
           gitStatuses={gitStatuses}
           profile={profile}
