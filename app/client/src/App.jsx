@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { flushSync } from "react-dom";
-import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2 } from "lucide-react";
+import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2, Cpu, ChevronDown, Check } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { MODEL_OPTIONS, getModelShortLabel } from "@/lib/models";
 import { useAgents } from "./hooks/useAgents.js";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useWorkspace } from "./hooks/useWorkspace.js";
@@ -31,6 +32,7 @@ export default function App() {
   const [scheduleCount, setScheduleCount] = useState(0);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [interactiveQuestions, setInteractiveQuestions] = useState({});
+  const [agentModels, setAgentModels] = useState({});  // agentId -> model string
   const [pendingQuestions, setPendingQuestions] = useState({});
   const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
   const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> [{ text }, ...] (FIFO queue)
@@ -320,15 +322,18 @@ export default function App() {
   useEffect(() => {
     if (!authenticated) return;
     fetchAgents().then(() => {
-      // Sync interactiveQuestions state from server
+      // Sync interactiveQuestions and model state from server
       fetch("/api/agents")
         .then((r) => r.json())
         .then((list) => {
           const iq = {};
+          const models = {};
           for (const a of list) {
             iq[a.id] = !!a.interactiveQuestions;
+            if (a.model) models[a.id] = a.model;
           }
           setInteractiveQuestions((prev) => ({ ...prev, ...iq }));
+          setAgentModels((prev) => ({ ...prev, ...models }));
         })
         .catch(() => {});
     });
@@ -352,7 +357,7 @@ export default function App() {
         }
       })
       .catch(() => {});
-    // Recover pending question state from server (e.g. after page reload)
+    // Recover pending question state and model from server (e.g. after page reload)
     fetch(`/api/agents/${selectedAgentId}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
@@ -364,6 +369,9 @@ export default function App() {
         }
         if (data?.interactiveQuestions !== undefined) {
           setInteractiveQuestions((prev) => ({ ...prev, [selectedAgentId]: !!data.interactiveQuestions }));
+        }
+        if (data?.model) {
+          setAgentModels((prev) => ({ ...prev, [selectedAgentId]: data.model }));
         }
       })
       .catch(() => {});
@@ -605,6 +613,21 @@ export default function App() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ interactiveQuestions: newValue }),
+      });
+    } catch {}
+  }
+
+  async function handleSetModel(model) {
+    if (!selectedAgentId) return;
+    setAgentModels((prev) => {
+      if (!model) { const next = { ...prev }; delete next[selectedAgentId]; return next; }
+      return { ...prev, [selectedAgentId]: model };
+    });
+    try {
+      await fetch(`/api/agents/${selectedAgentId}/settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: model || null }),
       });
     } catch {}
   }
@@ -867,7 +890,7 @@ export default function App() {
                   <div ref={messagesEndRef} />
                 </ScrollArea>
                 <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
-                <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} />
+                <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} model={agentModels[selectedAgentId] || ""} onSetModel={handleSetModel} />
               </div>
             )}
             {terminalOpen && (
@@ -897,9 +920,10 @@ export default function App() {
   );
 }
 
-function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions }) {
+function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions, model, onSetModel }) {
   const [text, setText] = useState("");
   const [attachedFiles, setAttachedFiles] = useState([]);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -976,6 +1000,18 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
     setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
+  // Close model menu on click outside
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    function handleClickOutside(e) {
+      // Check if click is inside any model menu container (desktop or mobile)
+      if (e.target.closest("[data-model-menu]")) return;
+      setModelMenuOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [modelMenuOpen]);
+
   return (
     <form onSubmit={handleSubmit} className="p-4 border-t border-border bg-background sticky bottom-0 z-10">
       {/* Input row: textarea + send button, full width */}
@@ -1024,6 +1060,58 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
         >
           <Paperclip className="h-4 w-4" />
         </Button>
+        <div className="relative hidden md:block shrink-0" data-model-menu>
+          <button
+            type="button"
+            onClick={() => setModelMenuOpen((v) => !v)}
+            className={cn(
+              "inline-flex items-center gap-1 px-2 py-1.5 text-xs rounded-md transition-colors",
+              model
+                ? "text-primary bg-primary/10 hover:bg-primary/15"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted"
+            )}
+            title="Select model"
+          >
+            <Cpu className="h-3.5 w-3.5" />
+            <span className="max-w-[80px] truncate">{getModelShortLabel(model)}</span>
+            <ChevronDown className="h-3 w-3" />
+          </button>
+          {modelMenuOpen && (
+            <div className="absolute bottom-full mb-1 left-0 w-56 bg-popover border border-border rounded-lg shadow-lg py-1 z-50">
+              <button
+                type="button"
+                onClick={() => { onSetModel(""); setModelMenuOpen(false); }}
+                className={cn(
+                  "w-full text-left px-3 py-2 text-xs hover:bg-accent flex items-center justify-between",
+                  !model && "text-primary font-medium"
+                )}
+              >
+                <span>
+                  <span className="font-medium">Default</span>
+                  <span className="block text-muted-foreground/70 text-[11px]">Uses Claude settings default</span>
+                </span>
+                {!model && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+              </button>
+              {MODEL_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => { onSetModel(opt.value); setModelMenuOpen(false); }}
+                  className={cn(
+                    "w-full text-left px-3 py-2 text-xs hover:bg-accent flex items-center justify-between",
+                    model === opt.value && "text-primary font-medium"
+                  )}
+                >
+                  <span>
+                    <span className="font-medium">{opt.label}</span>
+                    <span className="block text-muted-foreground/70 text-[11px]">{opt.description}</span>
+                  </span>
+                  {model === opt.value && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -1151,6 +1239,57 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
         >
           <Paperclip className="h-4 w-4" />
         </Button>
+        <div className="relative ml-auto" data-model-menu>
+          <button
+            type="button"
+            onClick={() => setModelMenuOpen((v) => !v)}
+            className={cn(
+              "inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-colors",
+              model
+                ? "text-primary bg-primary/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted"
+            )}
+          >
+            <Cpu className="h-3.5 w-3.5" />
+            <span className="max-w-[80px] truncate">{getModelShortLabel(model)}</span>
+            <ChevronDown className="h-3 w-3" />
+          </button>
+          {modelMenuOpen && (
+            <div className="absolute bottom-full mb-1 right-0 w-56 bg-popover border border-border rounded-lg shadow-lg py-1 z-50">
+              <button
+                type="button"
+                onClick={() => { onSetModel(""); setModelMenuOpen(false); }}
+                className={cn(
+                  "w-full text-left px-3 py-2 text-xs hover:bg-accent flex items-center justify-between",
+                  !model && "text-primary font-medium"
+                )}
+              >
+                <span>
+                  <span className="font-medium">Default</span>
+                  <span className="block text-muted-foreground/70 text-[11px]">Uses Claude settings default</span>
+                </span>
+                {!model && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+              </button>
+              {MODEL_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => { onSetModel(opt.value); setModelMenuOpen(false); }}
+                  className={cn(
+                    "w-full text-left px-3 py-2 text-xs hover:bg-accent flex items-center justify-between",
+                    model === opt.value && "text-primary font-medium"
+                  )}
+                >
+                  <span>
+                    <span className="font-medium">{opt.label}</span>
+                    <span className="block text-muted-foreground/70 text-[11px]">{opt.description}</span>
+                  </span>
+                  {model === opt.value && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </form>
   );

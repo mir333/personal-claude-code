@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw, FileText, X, Square } from "lucide-react";
+import { ArrowLeft, Play, Pencil, Trash2, Loader2, CheckCircle, XCircle, Clock, AlertCircle, FolderOpen, Globe, Copy, CopyCheck, RefreshCw, FileText, X, Square, Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -7,6 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import { Dialog } from "@/components/ui/dialog";
 import Markdown from "./Markdown.jsx";
 import { describeCron, formatDuration, formatRelativeTime } from "@/lib/cron";
+import { getModelLabel } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 const STATUS_ICONS = {
@@ -184,6 +185,10 @@ export default function TaskDetail({
           <span className="flex items-center gap-1">
             <FolderOpen className="h-3 w-3 text-muted-foreground/60" />
             <span className="font-medium text-foreground/80">{dirName}</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <Cpu className="h-3 w-3 text-muted-foreground/60" />
+            <span className="font-medium text-foreground/80">{getModelLabel(task.model)}</span>
           </span>
           {task.lastRunAt && (
             <span>

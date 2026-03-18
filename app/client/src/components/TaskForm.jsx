@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Loader2, ListTodo, FolderOpen, Search } from "lucide-react";
+import { Loader2, ListTodo, FolderOpen, Search, Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog } from "@/components/ui/dialog";
 import { CRON_PRESETS, describeCron } from "@/lib/cron";
+import { MODEL_OPTIONS } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 export default function TaskForm({ open, onClose, onSubmit, initial }) {
@@ -11,6 +12,7 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
   const [workingDirectory, setWorkingDirectory] = useState(initial?.workingDirectory || "");
   const [cronExpression, setCronExpression] = useState(initial?.cronExpression || "");
   const [prompt, setPrompt] = useState(initial?.prompt || "");
+  const [model, setModel] = useState(initial?.model || "");
   const [workspaces, setWorkspaces] = useState([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(false);
   const [workspaceFilter, setWorkspaceFilter] = useState("");
@@ -28,6 +30,7 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
       setWorkingDirectory(initial?.workingDirectory || "");
       setCronExpression(initial?.cronExpression || "");
       setPrompt(initial?.prompt || "");
+      setModel(initial?.model || "");
       setError("");
       setCronError("");
       setWorkspaceFilter("");
@@ -87,6 +90,7 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
         workingDirectory,
         cronExpression: cronExpression.trim() || null,
         prompt: prompt.trim(),
+        model: model || null,
       });
       onClose();
     } catch (err) {
@@ -229,6 +233,46 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
               Leave empty for a one-off task. You can run it manually anytime.
             </p>
           )}
+        </div>
+
+        {/* Model */}
+        <div>
+          <label className="text-xs text-muted-foreground font-medium flex items-center gap-1">
+            <Cpu className="h-3 w-3" />
+            Model
+          </label>
+          <div className="flex flex-wrap gap-1 mt-1">
+            <button
+              type="button"
+              onClick={() => setModel("")}
+              className={cn(
+                "px-2 py-1 text-xs rounded-md transition-colors border",
+                !model
+                  ? "bg-primary/20 text-primary border-primary/30"
+                  : "bg-muted text-muted-foreground hover:text-foreground border-transparent"
+              )}
+            >
+              Default
+            </button>
+            {MODEL_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setModel(opt.value)}
+                className={cn(
+                  "px-2 py-1 text-xs rounded-md transition-colors border",
+                  model === opt.value
+                    ? "bg-primary/20 text-primary border-primary/30"
+                    : "bg-muted text-muted-foreground hover:text-foreground border-transparent"
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground/60 mt-1">
+            {model ? MODEL_OPTIONS.find((m) => m.value === model)?.description || model : "Uses the default model configured in Claude settings."}
+          </p>
         </div>
 
         {/* Prompt */}

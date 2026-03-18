@@ -20,6 +20,7 @@ export function createAgent(name, workingDirectory, profileId) {
     textBuffer: "",
     interactiveQuestions: true,
     pendingQuestion: null,
+    model: null,               // Model override (e.g. "claude-sonnet-4-5-20250929")
     listeners: new Set(),      // Set of callback functions
     eventBuffer: [],           // Array of { index, event } for reconnect backfill
     eventIndex: 0,             // Monotonically increasing event counter
@@ -37,13 +38,14 @@ export function listAgents(profileId) {
   if (profileId) {
     all = all.filter((a) => a.profileId === profileId);
   }
-  return all.map(({ id, name, workingDirectory, status, interactiveQuestions, profileId: pid }) => ({
+  return all.map(({ id, name, workingDirectory, status, interactiveQuestions, profileId: pid, model }) => ({
     id,
     name,
     workingDirectory,
     status,
     interactiveQuestions,
     profileId: pid,
+    model: model || null,
   }));
 }
 
@@ -98,6 +100,13 @@ export function setInteractiveQuestions(id, value) {
   const agent = agents.get(id);
   if (!agent) return false;
   agent.interactiveQuestions = !!value;
+  return true;
+}
+
+export function setAgentModel(id, model) {
+  const agent = agents.get(id);
+  if (!agent) return false;
+  agent.model = model || null;
   return true;
 }
 
@@ -187,6 +196,11 @@ export async function sendMessage(id, text) {
       abortController,
       settingSources: ["user", "project"],
     };
+
+    // Apply model override if set
+    if (agent.model) {
+      options.model = agent.model;
+    }
 
     // Add PreToolUse hook for interactive questions
     if (agent.interactiveQuestions) {

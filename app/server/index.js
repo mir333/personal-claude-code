@@ -18,6 +18,7 @@ import {
   clearHistory,
   sendMessage,
   setInteractiveQuestions,
+  setAgentModel,
   answerQuestion,
   subscribeAgent,
   unsubscribeAgent,
@@ -559,11 +560,11 @@ app.get("/api/agents", (req, res) => {
 app.get("/api/agents/:id", (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
-  const { id, name, workingDirectory, status, interactiveQuestions } = agent;
+  const { id, name, workingDirectory, status, interactiveQuestions, model } = agent;
   const pendingQuestion = agent.pendingQuestion
     ? { input: agent._pendingQuestionInput, toolUseId: agent._pendingQuestionToolUseId }
     : null;
-  res.json({ id, name, workingDirectory, status, interactiveQuestions, pendingQuestion });
+  res.json({ id, name, workingDirectory, status, interactiveQuestions, model: model || null, pendingQuestion });
 });
 
 app.delete("/api/agents/:id", (req, res) => {
@@ -817,7 +818,10 @@ app.patch("/api/agents/:id/settings", (req, res) => {
   if (req.body.interactiveQuestions !== undefined) {
     setInteractiveQuestions(req.params.id, req.body.interactiveQuestions);
   }
-  res.json({ interactiveQuestions: agent.interactiveQuestions });
+  if (req.body.model !== undefined) {
+    setAgentModel(req.params.id, req.body.model);
+  }
+  res.json({ interactiveQuestions: agent.interactiveQuestions, model: agent.model || null });
 });
 
 // Git config endpoints (profile-scoped)
@@ -952,7 +956,7 @@ app.get("/api/tasks", (req, res) => {
 
 app.post("/api/tasks", (req, res) => {
   const profileId = req.profile?.id || null;
-  const { name, cronExpression, workingDirectory, prompt } = req.body;
+  const { name, cronExpression, workingDirectory, prompt, model } = req.body;
 
   if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
   if (!workingDirectory) return res.status(400).json({ error: "workingDirectory is required" });
@@ -970,7 +974,7 @@ app.post("/api/tasks", (req, res) => {
     return res.status(400).json({ error: "workingDirectory must be within the workspace" });
   }
 
-  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: prompt.trim() });
+  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: prompt.trim(), model: model || null });
   res.status(201).json(task);
 });
 

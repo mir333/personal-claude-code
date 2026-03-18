@@ -232,6 +232,7 @@ export function createTask(profileId, config) {
     cronExpression: config.cronExpression || null,
     workingDirectory: config.workingDirectory,
     prompt: config.prompt,
+    model: config.model || null,
     webhookToken: null,
     createdAt: now,
     updatedAt: now,
@@ -274,6 +275,7 @@ export function updateTask(taskId, updates) {
   }
   if (updates.workingDirectory !== undefined) task.workingDirectory = updates.workingDirectory;
   if (updates.prompt !== undefined) task.prompt = updates.prompt;
+  if (updates.model !== undefined) task.model = updates.model || null;
   task.updatedAt = Date.now();
 
   tasks.set(taskId, task);
@@ -455,6 +457,11 @@ export async function executeTask(taskId, { payload, runId } = {}) {
 
     // Disable interactive questions for task runs
     agent.interactiveQuestions = false;
+
+    // Apply model override from task config
+    if (task.model) {
+      agent.model = task.model;
+    }
 
     // Capture events
     const listener = (event) => {
