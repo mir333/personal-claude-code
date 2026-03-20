@@ -241,12 +241,14 @@ export async function sendMessage(id, text, attachments = null) {
     }
 
     // Build prompt: use content blocks (AsyncIterable<SDKUserMessage>) when
-    // there are image attachments so Claude receives them as native vision
-    // content. For text-only messages, keep the simple string format.
+    // there are binary attachments (images/PDFs) so Claude receives them as
+    // native content. For text-only messages, keep the simple string format.
     const imageAttachments = attachments?.filter((a) => a.type === "image") || [];
+    const pdfAttachments = attachments?.filter((a) => a.type === "pdf") || [];
+    const hasBinaryAttachments = imageAttachments.length > 0 || pdfAttachments.length > 0;
     let prompt;
 
-    if (imageAttachments.length > 0) {
+    if (hasBinaryAttachments) {
       const contentBlocks = [];
 
       // Add image content blocks first (images before text is best practice)
@@ -257,6 +259,18 @@ export async function sendMessage(id, text, attachments = null) {
             type: "base64",
             media_type: img.mediaType,
             data: img.data,
+          },
+        });
+      }
+
+      // Add PDF content blocks as documents
+      for (const pdf of pdfAttachments) {
+        contentBlocks.push({
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: pdf.data,
           },
         });
       }

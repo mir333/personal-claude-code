@@ -835,8 +835,8 @@ export default function App() {
                           }
                           const displayText = msg.text.replace(/<file\s+path="[^"]*">\n[\s\S]*?\n<\/file>\n?/g, "").trim();
                           const imageAttachments = (msg.attachments || []).filter((a) => a.type === "image");
-                          const fileAttachments = (msg.attachments || []).filter((a) => a.type === "file");
-                          const hasChips = fileNames.length > 0 || imageAttachments.length > 0 || fileAttachments.length > 0;
+                          const pdfAttachments = (msg.attachments || []).filter((a) => a.type === "pdf");
+                          const hasChips = fileNames.length > 0 || imageAttachments.length > 0 || pdfAttachments.length > 0;
                           return (
                             <div className="max-w-full md:max-w-lg ml-auto space-y-1.5">
                               {hasChips && (
@@ -847,8 +847,8 @@ export default function App() {
                                       <span className="truncate max-w-[180px]">{name}</span>
                                     </span>
                                   ))}
-                                  {fileAttachments.map((a, i) => (
-                                    <span key={`fa-${i}`} className="inline-flex items-center gap-1 bg-secondary/80 border border-border rounded-md px-2 py-0.5 text-xs text-muted-foreground">
+                                  {pdfAttachments.map((a, i) => (
+                                    <span key={`p-${i}`} className="inline-flex items-center gap-1 bg-red-500/10 border border-red-500/30 rounded-md px-2 py-0.5 text-xs text-red-400">
                                       <FileText className="h-3 w-3 shrink-0" />
                                       <span className="truncate max-w-[180px]">{a.name}</span>
                                     </span>
@@ -936,8 +936,8 @@ export default function App() {
                           }
                           const pendingDisplayText = msg.text.replace(/<file\s+path="[^"]*">\n[\s\S]*?\n<\/file>\n?/g, "").trim();
                           const pendingImageAttachments = (msg.attachments || []).filter((a) => a.type === "image");
-                          const pendingFileAttachments = (msg.attachments || []).filter((a) => a.type === "file");
-                          const hasPendingChips = pendingFileNames.length > 0 || pendingImageAttachments.length > 0 || pendingFileAttachments.length > 0;
+                          const pendingPdfAttachments = (msg.attachments || []).filter((a) => a.type === "pdf");
+                          const hasPendingChips = pendingFileNames.length > 0 || pendingImageAttachments.length > 0 || pendingPdfAttachments.length > 0;
                           return (
                             <div className="max-w-full md:max-w-lg ml-auto">
                               {hasPendingChips && (
@@ -948,8 +948,8 @@ export default function App() {
                                       <span className="truncate max-w-[180px]">{name}</span>
                                     </span>
                                   ))}
-                                  {pendingFileAttachments.map((a, i) => (
-                                    <span key={`fa-${i}`} className="inline-flex items-center gap-1 bg-secondary/40 border border-dashed border-secondary-foreground/20 rounded-md px-2 py-0.5 text-xs text-muted-foreground">
+                                  {pendingPdfAttachments.map((a, i) => (
+                                    <span key={`p-${i}`} className="inline-flex items-center gap-1 bg-red-500/10 border border-dashed border-red-500/30 rounded-md px-2 py-0.5 text-xs text-red-400/70">
                                       <FileText className="h-3 w-3 shrink-0" />
                                       <span className="truncate max-w-[180px]">{a.name}</span>
                                     </span>
@@ -1063,6 +1063,7 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
 
     const textFiles = attachedFiles.filter((f) => f.type === "text");
     const imageFiles = attachedFiles.filter((f) => f.type === "image");
+    const pdfFiles = attachedFiles.filter((f) => f.type === "pdf");
 
     // Build text portion: text files use XML format (as before), then user text
     let message = "";
@@ -1076,14 +1077,21 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
       message += text;
     }
 
-    // Build attachments array for images (sent as SDK content blocks server-side)
-    // and non-image binary files sent as file attachments
-    const attachments = imageFiles.map((f) => ({
-      name: f.name,
-      type: "image",
-      mediaType: f.mediaType,
-      data: f.data,
-    }));
+    // Build attachments array for images and PDFs (sent as SDK content blocks server-side)
+    const attachments = [
+      ...imageFiles.map((f) => ({
+        name: f.name,
+        type: "image",
+        mediaType: f.mediaType,
+        data: f.data,
+      })),
+      ...pdfFiles.map((f) => ({
+        name: f.name,
+        type: "pdf",
+        mediaType: f.mediaType,
+        data: f.data,
+      })),
+    ];
 
     if (attachments.length > 0) {
       onSend(message, attachments);
@@ -1108,11 +1116,32 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
   function handleFileSelect(e) {
     const IMAGE_MIME_TYPES = { "image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true };
     const IMAGE_EXTENSIONS = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
+    // Known binary extensions that can't be meaningfully read as text
+    const BINARY_EXTENSIONS = new Set([
+      "zip", "tar", "gz", "bz2", "7z", "rar", "xz",
+      "exe", "dll", "so", "dylib", "bin",
+      "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+      "mp3", "mp4", "avi", "mov", "mkv", "flac", "wav", "ogg", "m4a",
+      "ttf", "otf", "woff", "woff2", "eot",
+      "sqlite", "db", "iso", "dmg", "deb", "rpm",
+      "class", "pyc", "pyo", "o", "a", "lib",
+    ]);
 
     function getImageMediaType(file) {
       if (IMAGE_MIME_TYPES[file.type]) return file.type;
       const ext = file.name.split(".").pop()?.toLowerCase();
       return (ext && IMAGE_EXTENSIONS[ext]) || null;
+    }
+
+    function isPdf(file) {
+      if (file.type === "application/pdf") return true;
+      const ext = file.name.split(".").pop()?.toLowerCase();
+      return ext === "pdf";
+    }
+
+    function isBinaryFile(file) {
+      const ext = file.name.split(".").pop()?.toLowerCase();
+      return ext && BINARY_EXTENSIONS.has(ext);
     }
 
     const files = Array.from(e.target.files || []);
@@ -1139,8 +1168,27 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
               resolve({ name: file.name, type: "error", error: "Could not read image" });
             };
             reader.readAsDataURL(file);
+          } else if (isPdf(file)) {
+            // PDF file — read as base64 for native Claude document support
+            if (file.size > 32 * 1024 * 1024) {
+              resolve({ name: file.name, type: "error", error: "PDF exceeds 32MB limit" });
+              return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => {
+              const dataUrl = reader.result;
+              const base64 = dataUrl.split(",")[1];
+              resolve({ name: file.name, type: "pdf", mediaType: "application/pdf", data: base64 });
+            };
+            reader.onerror = () => {
+              resolve({ name: file.name, type: "error", error: "Could not read PDF" });
+            };
+            reader.readAsDataURL(file);
+          } else if (isBinaryFile(file)) {
+            // Known binary file — cannot be sent to Claude
+            resolve({ name: file.name, type: "error", error: "Binary files are not supported. Use text, image, or PDF files." });
           } else {
-            // Non-image file — read as text (code, config, logs, etc.)
+            // Text-like file — read as text (code, config, logs, etc.)
             const reader = new FileReader();
             reader.onload = () => {
               resolve({ name: file.name, type: "text", content: reader.result });
@@ -1294,7 +1342,7 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
                 <Badge
                   key={idx}
                   variant="secondary"
-                  className={cn("gap-1 pl-1.5 pr-1 py-0.5 max-w-[200px] cursor-default", file.type === "image" && "border-blue-500/30")}
+                  className={cn("gap-1 pl-1.5 pr-1 py-0.5 max-w-[200px] cursor-default", file.type === "image" && "border-blue-500/30", file.type === "pdf" && "border-red-500/30")}
                 >
                   {file.type === "image" ? (
                     <img src={file.dataUrl} alt={file.name} className="h-5 w-5 rounded-sm object-cover shrink-0" />
