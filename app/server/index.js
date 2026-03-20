@@ -1128,7 +1128,7 @@ app.get("{*path}", (_req, res) => {
 });
 
 // WebSocket
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 50 * 1024 * 1024 });
 
 server.on("upgrade", (request, socket, head) => {
   // Parse session from the upgrade request
@@ -1224,7 +1224,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    if (data.type === "message" && data.agentId && data.text) {
+    if (data.type === "message" && data.agentId && (data.text || data.attachments)) {
       const agent = getAgent(data.agentId);
 
       // If agent is busy, push message onto the FIFO queue
@@ -1234,15 +1234,15 @@ wss.on("connection", (ws) => {
           queue = [];
           pendingMessages.set(data.agentId, queue);
         }
-        queue.push(data.text);
+        queue.push({ text: data.text || "", attachments: data.attachments || null });
         if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: "message_queued", agentId: data.agentId, text: data.text, queueLength: queue.length }));
+          ws.send(JSON.stringify({ type: "message_queued", agentId: data.agentId, text: data.text || "", queueLength: queue.length }));
         }
         return;
       }
 
       // Process message and then drain queued follow-ups in FIFO order
-      async function processMessage(text) {
+      async function processMessage(text, attachments) {
         // Evict any existing listener for this agent to prevent leaks
         const existingListener = connectionListeners.get(data.agentId);
         if (existingListener) {
@@ -1256,7 +1256,7 @@ wss.on("connection", (ws) => {
         subscribeAgent(data.agentId, listener);
         connectionListeners.set(data.agentId, listener);
         try {
-          await sendMessage(data.agentId, text);
+          await sendMessage(data.agentId, text, attachments);
         } catch (err) {
           if (ws.readyState === ws.OPEN) {
             ws.send(
@@ -1274,13 +1274,13 @@ wss.on("connection", (ws) => {
           const next = queue.shift();
           if (queue.length === 0) pendingMessages.delete(data.agentId);
           // Notify client the next pending message is now being sent
-          ws.send(JSON.stringify({ type: "message_dequeued", agentId: data.agentId, text: next }));
+          ws.send(JSON.stringify({ type: "message_dequeued", agentId: data.agentId, text: next.text }));
           // Process the next queued message
-          await processMessage(next);
+          await processMessage(next.text, next.attachments);
         }
       }
 
-      await processMessage(data.text);
+      await processMessage(data.text || "", data.attachments || null);
     } else if (data.type === "terminal_start" && data.agentId) {
       const agent = getAgent(data.agentId);
       if (!agent) {

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { flushSync } from "react-dom";
-import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2, Cpu, ChevronDown, Check, ArrowDown } from "lucide-react";
+import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2, Cpu, ChevronDown, Check, ArrowDown, Image as ImageIcon } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -498,27 +498,35 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }
 
-  function handleSend(text) {
-    if (!selectedAgentId || !text.trim()) return;
+  function handleSend(text, attachments) {
+    if (!selectedAgentId || (!text.trim() && (!attachments || attachments.length === 0))) return;
     // Re-enable auto-scroll when user sends a message
     autoScrollRef.current = true;
     setShowScrollDown(false);
     const agent = agents.find((a) => a.id === selectedAgentId);
     const isBusy = agent?.status === "busy";
 
+    // Store attachment metadata (no binary data) for display in conversation
+    const displayAttachments = attachments?.map((a) => ({ name: a.name, type: a.type, mediaType: a.mediaType })) || undefined;
+
     if (isBusy) {
       // Append to the queue — multiple pending messages allowed
       setConversations((prev) => {
         const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
-        return { ...prev, [selectedAgentId]: { ...data, entries: [...data.entries, { type: "pending_user", text }] } };
+        return { ...prev, [selectedAgentId]: { ...data, entries: [...data.entries, { type: "pending_user", text, attachments: displayAttachments }] } };
       });
     } else {
       setConversations((prev) => {
         const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
-        return { ...prev, [selectedAgentId]: { ...data, entries: [...data.entries, { type: "user", text }], total: data.total + 1 } };
+        return { ...prev, [selectedAgentId]: { ...data, entries: [...data.entries, { type: "user", text, attachments: displayAttachments }], total: data.total + 1 } };
       });
     }
-    send({ type: "message", agentId: selectedAgentId, text });
+
+    if (attachments && attachments.length > 0) {
+      send({ type: "message", agentId: selectedAgentId, text, attachments });
+    } else {
+      send({ type: "message", agentId: selectedAgentId, text });
+    }
   }
 
   function handleCancelPending(index) {
@@ -817,13 +825,50 @@ export default function App() {
                     const msg = group.msg;
                     return (
                       <div key={gi} className="mb-2 text-sm">
-                        {msg.type === "user" && (
-                          <div
-                            className="max-w-full md:max-w-lg bg-secondary text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto"
-                          >
-                            <Markdown>{msg.text}</Markdown>
-                          </div>
-                        )}
+                        {msg.type === "user" && (() => {
+                          // Strip <file> XML blocks and show compact chips instead
+                          const fileRegex = /<file\s+path="([^"]*)">\n[\s\S]*?\n<\/file>\n?/g;
+                          const fileNames = [];
+                          let match;
+                          while ((match = fileRegex.exec(msg.text)) !== null) {
+                            fileNames.push(match[1]);
+                          }
+                          const displayText = msg.text.replace(/<file\s+path="[^"]*">\n[\s\S]*?\n<\/file>\n?/g, "").trim();
+                          const imageAttachments = (msg.attachments || []).filter((a) => a.type === "image");
+                          const fileAttachments = (msg.attachments || []).filter((a) => a.type === "file");
+                          const hasChips = fileNames.length > 0 || imageAttachments.length > 0 || fileAttachments.length > 0;
+                          return (
+                            <div className="max-w-full md:max-w-lg ml-auto space-y-1.5">
+                              {hasChips && (
+                                <div className="flex flex-wrap gap-1 justify-end">
+                                  {fileNames.map((name, i) => (
+                                    <span key={`f-${i}`} className="inline-flex items-center gap-1 bg-secondary/80 border border-border rounded-md px-2 py-0.5 text-xs text-muted-foreground">
+                                      <FileText className="h-3 w-3 shrink-0" />
+                                      <span className="truncate max-w-[180px]">{name}</span>
+                                    </span>
+                                  ))}
+                                  {fileAttachments.map((a, i) => (
+                                    <span key={`fa-${i}`} className="inline-flex items-center gap-1 bg-secondary/80 border border-border rounded-md px-2 py-0.5 text-xs text-muted-foreground">
+                                      <FileText className="h-3 w-3 shrink-0" />
+                                      <span className="truncate max-w-[180px]">{a.name}</span>
+                                    </span>
+                                  ))}
+                                  {imageAttachments.map((a, i) => (
+                                    <span key={`i-${i}`} className="inline-flex items-center gap-1 bg-blue-500/10 border border-blue-500/30 rounded-md px-2 py-0.5 text-xs text-blue-400">
+                                      <ImageIcon className="h-3 w-3 shrink-0" />
+                                      <span className="truncate max-w-[180px]">{a.name}</span>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {displayText && (
+                                <div className="bg-secondary text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
+                                  <Markdown>{displayText}</Markdown>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                         {msg.type === "assistant_stream" && (
                           <div className="group/msg relative max-w-full md:max-w-3/4 bg-card border border-border rounded-lg px-4 py-2">
                             <button
@@ -883,13 +928,47 @@ export default function App() {
                           const pendingIdx = pendingEntries.indexOf(msg);
                           const queuePos = pendingIdx + 1;
                           const totalPending = pendingEntries.length;
+                          const pendingFileRegex = /<file\s+path="([^"]*)">\n[\s\S]*?\n<\/file>\n?/g;
+                          const pendingFileNames = [];
+                          let pendingMatch;
+                          while ((pendingMatch = pendingFileRegex.exec(msg.text)) !== null) {
+                            pendingFileNames.push(pendingMatch[1]);
+                          }
+                          const pendingDisplayText = msg.text.replace(/<file\s+path="[^"]*">\n[\s\S]*?\n<\/file>\n?/g, "").trim();
+                          const pendingImageAttachments = (msg.attachments || []).filter((a) => a.type === "image");
+                          const pendingFileAttachments = (msg.attachments || []).filter((a) => a.type === "file");
+                          const hasPendingChips = pendingFileNames.length > 0 || pendingImageAttachments.length > 0 || pendingFileAttachments.length > 0;
                           return (
                             <div className="max-w-full md:max-w-lg ml-auto">
-                              <div
-                                className="bg-secondary/60 text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto border border-dashed border-secondary-foreground/20"
-                              >
-                                <Markdown>{msg.text}</Markdown>
-                              </div>
+                              {hasPendingChips && (
+                                <div className="flex flex-wrap gap-1 justify-end mb-1">
+                                  {pendingFileNames.map((name, i) => (
+                                    <span key={`f-${i}`} className="inline-flex items-center gap-1 bg-secondary/40 border border-dashed border-secondary-foreground/20 rounded-md px-2 py-0.5 text-xs text-muted-foreground">
+                                      <FileText className="h-3 w-3 shrink-0" />
+                                      <span className="truncate max-w-[180px]">{name}</span>
+                                    </span>
+                                  ))}
+                                  {pendingFileAttachments.map((a, i) => (
+                                    <span key={`fa-${i}`} className="inline-flex items-center gap-1 bg-secondary/40 border border-dashed border-secondary-foreground/20 rounded-md px-2 py-0.5 text-xs text-muted-foreground">
+                                      <FileText className="h-3 w-3 shrink-0" />
+                                      <span className="truncate max-w-[180px]">{a.name}</span>
+                                    </span>
+                                  ))}
+                                  {pendingImageAttachments.map((a, i) => (
+                                    <span key={`i-${i}`} className="inline-flex items-center gap-1 bg-blue-500/10 border border-dashed border-blue-500/30 rounded-md px-2 py-0.5 text-xs text-blue-400/70">
+                                      <ImageIcon className="h-3 w-3 shrink-0" />
+                                      <span className="truncate max-w-[180px]">{a.name}</span>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {pendingDisplayText && (
+                                <div
+                                  className="bg-secondary/60 text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto border border-dashed border-secondary-foreground/20"
+                                >
+                                  <Markdown>{pendingDisplayText}</Markdown>
+                                </div>
+                              )}
                               <div className="flex items-center justify-end gap-2 mt-1">
                                 <Clock className="h-3 w-3 text-muted-foreground animate-pulse" />
                                 <span className="text-[11px] text-muted-foreground">
@@ -982,9 +1061,13 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
     const hasText = text.trim().length > 0;
     if (!hasFiles && !hasText) return;
 
+    const textFiles = attachedFiles.filter((f) => f.type === "text");
+    const imageFiles = attachedFiles.filter((f) => f.type === "image");
+
+    // Build text portion: text files use XML format (as before), then user text
     let message = "";
-    if (hasFiles) {
-      const fileParts = attachedFiles.map(
+    if (textFiles.length > 0) {
+      const fileParts = textFiles.map(
         (f) => `<file path="${f.name.replace(/"/g, '&quot;')}">\n${f.content}\n</file>`
       );
       message = fileParts.join("\n") + "\n";
@@ -993,7 +1076,21 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
       message += text;
     }
 
-    onSend(message);
+    // Build attachments array for images (sent as SDK content blocks server-side)
+    // and non-image binary files sent as file attachments
+    const attachments = imageFiles.map((f) => ({
+      name: f.name,
+      type: "image",
+      mediaType: f.mediaType,
+      data: f.data,
+    }));
+
+    if (attachments.length > 0) {
+      onSend(message, attachments);
+    } else {
+      onSend(message);
+    }
+
     setText("");
     setAttachedFiles([]);
     if (textareaRef.current) {
@@ -1009,24 +1106,59 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
   }
 
   function handleFileSelect(e) {
+    const IMAGE_MIME_TYPES = { "image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true };
+    const IMAGE_EXTENSIONS = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
+
+    function getImageMediaType(file) {
+      if (IMAGE_MIME_TYPES[file.type]) return file.type;
+      const ext = file.name.split(".").pop()?.toLowerCase();
+      return (ext && IMAGE_EXTENSIONS[ext]) || null;
+    }
+
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
     Promise.all(
       files.map((file) => {
         return new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            resolve({ name: file.name, content: reader.result });
-          };
-          reader.onerror = () => {
-            resolve({ name: file.name, content: "[Error: could not read file]" });
-          };
-          reader.readAsText(file);
+          const mediaType = getImageMediaType(file);
+
+          if (mediaType) {
+            // Image file — read as base64 for native Claude vision support
+            if (file.size > 5 * 1024 * 1024) {
+              resolve({ name: file.name, type: "error", error: "Image exceeds 5MB limit" });
+              return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => {
+              const dataUrl = reader.result;
+              const base64 = dataUrl.split(",")[1];
+              resolve({ name: file.name, type: "image", mediaType, data: base64, dataUrl });
+            };
+            reader.onerror = () => {
+              resolve({ name: file.name, type: "error", error: "Could not read image" });
+            };
+            reader.readAsDataURL(file);
+          } else {
+            // Non-image file — read as text (code, config, logs, etc.)
+            const reader = new FileReader();
+            reader.onload = () => {
+              resolve({ name: file.name, type: "text", content: reader.result });
+            };
+            reader.onerror = () => {
+              resolve({ name: file.name, type: "error", error: "Could not read file" });
+            };
+            reader.readAsText(file);
+          }
         });
       })
     ).then((newFiles) => {
-      setAttachedFiles((prev) => [...prev, ...newFiles]);
+      const valid = newFiles.filter((f) => f.type !== "error");
+      const errors = newFiles.filter((f) => f.type === "error");
+      if (errors.length > 0) {
+        console.warn("Skipped files:", errors.map((e) => `${e.name}: ${e.error}`));
+      }
+      setAttachedFiles((prev) => [...prev, ...valid]);
     });
 
     e.target.value = "";
@@ -1162,9 +1294,13 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
                 <Badge
                   key={idx}
                   variant="secondary"
-                  className="gap-1 pl-1.5 pr-1 py-0.5 max-w-[200px] cursor-default"
+                  className={cn("gap-1 pl-1.5 pr-1 py-0.5 max-w-[200px] cursor-default", file.type === "image" && "border-blue-500/30")}
                 >
-                  <FileText className="h-3 w-3 shrink-0" />
+                  {file.type === "image" ? (
+                    <img src={file.dataUrl} alt={file.name} className="h-5 w-5 rounded-sm object-cover shrink-0" />
+                  ) : (
+                    <FileText className="h-3 w-3 shrink-0" />
+                  )}
                   <span className="truncate text-xs">{file.name}</span>
                   <button
                     type="button"

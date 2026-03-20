@@ -153,7 +153,7 @@ function formatUserAnswer(toolInput, answers) {
   return lines.join("\n");
 }
 
-export async function sendMessage(id, text) {
+export async function sendMessage(id, text, attachments = null) {
   const agent = agents.get(id);
   if (!agent) throw new Error("Agent not found");
   if (agent.status === "busy") throw new Error("Agent is busy");
@@ -178,8 +178,12 @@ export async function sendMessage(id, text) {
     }
   }
 
-  // Persist user message
-  appendEntry(agent.workingDirectory, { type: "user", text });
+  // Persist user message (store attachment metadata only, no binary data)
+  const storageEntry = { type: "user", text };
+  if (attachments && attachments.length > 0) {
+    storageEntry.attachments = attachments.map((a) => ({ name: a.name, type: a.type, mediaType: a.mediaType }));
+  }
+  appendEntry(agent.workingDirectory, storageEntry);
 
   // Ensure working directory exists (spawn fails with ENOENT if cwd is missing)
   mkdirSync(agent.workingDirectory, { recursive: true });
@@ -236,7 +240,47 @@ export async function sendMessage(id, text) {
       options.resume = agent.sessionId;
     }
 
-    for await (const message of query({ prompt: text, options })) {
+    // Build prompt: use content blocks (AsyncIterable<SDKUserMessage>) when
+    // there are image attachments so Claude receives them as native vision
+    // content. For text-only messages, keep the simple string format.
+    const imageAttachments = attachments?.filter((a) => a.type === "image") || [];
+    let prompt;
+
+    if (imageAttachments.length > 0) {
+      const contentBlocks = [];
+
+      // Add image content blocks first (images before text is best practice)
+      for (const img of imageAttachments) {
+        contentBlocks.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: img.mediaType,
+            data: img.data,
+          },
+        });
+      }
+
+      // Add text block (may include <file> XML for text file attachments)
+      if (text && text.trim()) {
+        contentBlocks.push({ type: "text", text });
+      }
+
+      const sessionId = agent.sessionId || uuidv4();
+      async function* messageStream() {
+        yield {
+          type: "user",
+          message: { role: "user", content: contentBlocks },
+          parent_tool_use_id: null,
+          session_id: sessionId,
+        };
+      }
+      prompt = messageStream();
+    } else {
+      prompt = text;
+    }
+
+    for await (const message of query({ prompt, options })) {
       if (abortController.signal.aborted) break;
 
       // Capture session ID
