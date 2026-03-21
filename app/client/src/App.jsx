@@ -38,6 +38,7 @@ export default function App() {
   const [pendingQuestions, setPendingQuestions] = useState({});
   const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
   const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> [{ text }, ...] (FIFO queue)
+  const [drafts, setDrafts] = useState({}); // agentId -> { text, attachedFiles }
   const terminalDataRef = useRef(null);
   const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses, removeWorktree, removeWorktreeByPath, deleteAllLocalBranches } = useAgents();
   const { projects, fetchDirectories } = useWorkspace();
@@ -612,6 +613,11 @@ export default function App() {
       delete next[id];
       return next;
     });
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   }
 
   async function handleDeleteProject(dirName, agentId) {
@@ -1093,7 +1099,7 @@ export default function App() {
                   </button>
                 )}
                 <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
-                <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} model={agentModels[selectedAgentId] || ""} onSetModel={handleSetModel} />
+                <ChatInput key={selectedAgentId} onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} model={agentModels[selectedAgentId] || ""} onSetModel={handleSetModel} draftText={drafts[selectedAgentId]?.text || ""} draftFiles={drafts[selectedAgentId]?.attachedFiles || []} onDraftChange={(text, files) => setDrafts((prev) => ({ ...prev, [selectedAgentId]: { text, attachedFiles: files } }))} />
               </div>
             )}
             {editorOpen && (
@@ -1128,12 +1134,34 @@ export default function App() {
   );
 }
 
-function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions, model, onSetModel }) {
-  const [text, setText] = useState("");
-  const [attachedFiles, setAttachedFiles] = useState([]);
+function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions, model, onSetModel, draftText = "", draftFiles = [], onDraftChange }) {
+  const [text, setText] = useState(draftText);
+  const [attachedFiles, setAttachedFiles] = useState(draftFiles);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // Persist drafts back to parent on unmount (agent switch) or when text/files change
+  const draftRef = useRef({ text, attachedFiles });
+  draftRef.current = { text, attachedFiles };
+
+  useEffect(() => {
+    // Save draft on unmount (when switching away from this agent)
+    return () => {
+      if (onDraftChange) {
+        onDraftChange(draftRef.current.text, draftRef.current.attachedFiles);
+      }
+    };
+  }, []);
+
+  // Resize textarea on mount to fit restored draft
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (ta && text) {
+      ta.style.height = "auto";
+      ta.style.height = ta.scrollHeight + "px";
+    }
+  }, []);
 
   function resetHeight() {
     const ta = textareaRef.current;
@@ -1194,6 +1222,8 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
 
     setText("");
     setAttachedFiles([]);
+    // Clear draft immediately so it's gone when coming back to this chat
+    if (onDraftChange) onDraftChange("", []);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
