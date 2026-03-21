@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { Plus, ChevronUp, ChevronDown, Pencil, Trash2, X, Check } from "lucide-react";
+import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { Plus, GripVertical, Pencil, Trash2, X, Check } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +51,10 @@ export default function SuggestionManager({
   const [error, setError] = useState(null);
 
   const sorted = [...suggestions].sort((a, b) => a.order - b.order);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+  );
 
   function startEdit(suggestion) {
     setEditingId(suggestion.id);
@@ -121,26 +128,19 @@ export default function SuggestionManager({
     }
   }
 
-  async function handleMoveUp(index) {
-    if (index <= 0) return;
-    const ids = sorted.map((s) => s.id);
-    [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]];
-    try {
-      await onReorder(ids);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
+  function handleDragEnd(event) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
 
-  async function handleMoveDown(index) {
-    if (index >= sorted.length - 1) return;
+    const oldIndex = sorted.findIndex((s) => s.id === active.id);
+    const newIndex = sorted.findIndex((s) => s.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+
     const ids = sorted.map((s) => s.id);
-    [ids[index], ids[index + 1]] = [ids[index + 1], ids[index]];
-    try {
-      await onReorder(ids);
-    } catch (err) {
-      setError(err.message);
-    }
+    const [removed] = ids.splice(oldIndex, 1);
+    ids.splice(newIndex, 0, removed);
+
+    onReorder(ids).catch((err) => setError(err.message));
   }
 
   function toggleContextTag(tag) {
@@ -198,106 +198,147 @@ export default function SuggestionManager({
           />
         )}
 
-        {/* Suggestion list */}
-        <div className="space-y-1 max-h-[50vh] overflow-y-auto">
-          {sorted.map((s, index) => (
-            <div key={s.id}>
-              {editingId === s.id ? (
-                <SuggestionForm
-                  formData={formData}
-                  setFormData={setFormData}
-                  onSave={handleSave}
-                  onCancel={cancelForm}
-                  saving={saving}
-                  toggleContextTag={toggleContextTag}
-                  title="Edit Suggestion"
+        {/* Suggestion list with drag-and-drop */}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={sorted.map((s) => s.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="space-y-1 max-h-[50vh] overflow-y-auto">
+              {sorted.map((s) => (
+                <SortableItem
+                  key={s.id}
+                  suggestion={s}
+                  editingId={editingId}
+                  onEdit={startEdit}
+                  onDelete={handleDelete}
+                  onToggle={handleToggleEnabled}
+                  formProps={{
+                    formData,
+                    setFormData,
+                    onSave: handleSave,
+                    onCancel: cancelForm,
+                    saving,
+                    toggleContextTag,
+                    title: "Edit Suggestion",
+                  }}
                 />
-              ) : (
-                <div
-                  className={cn(
-                    "flex items-center gap-2 px-2 py-1.5 rounded-md group hover:bg-muted/50 transition-colors",
-                    !s.enabled && "opacity-50"
-                  )}
-                >
-                  {/* Enable/disable toggle */}
-                  <button
-                    onClick={() => handleToggleEnabled(s)}
-                    title={s.enabled ? "Disable" : "Enable"}
-                    className={cn(
-                      "flex-shrink-0 h-4 w-4 rounded border transition-colors",
-                      s.enabled
-                        ? "bg-primary border-primary"
-                        : "border-muted-foreground/40 hover:border-muted-foreground"
-                    )}
-                  >
-                    {s.enabled && (
-                      <Check className="h-3 w-3 text-primary-foreground mx-auto" />
-                    )}
-                  </button>
-
-                  {/* Name + type badge */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-sm truncate">{s.name}</span>
-                      <Badge
-                        variant="secondary"
-                        className="text-[10px] px-1.5 py-0 flex-shrink-0"
-                      >
-                        {s.actionType}
-                      </Badge>
-                      {s.builtIn && (
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] px-1.5 py-0 flex-shrink-0"
-                        >
-                          built-in
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Action buttons */}
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button
-                      onClick={() => startEdit(s)}
-                      title="Edit"
-                      className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
-                    >
-                      <Pencil className="h-3 w-3" />
-                    </button>
-                    {!s.builtIn && (
-                      <button
-                        onClick={() => handleDelete(s.id)}
-                        title="Delete"
-                        className="p-1 text-muted-foreground hover:text-destructive rounded transition-colors"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleMoveUp(index)}
-                      disabled={index === 0}
-                      title="Move up"
-                      className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors disabled:opacity-30"
-                    >
-                      <ChevronUp className="h-3 w-3" />
-                    </button>
-                    <button
-                      onClick={() => handleMoveDown(index)}
-                      disabled={index === sorted.length - 1}
-                      title="Move down"
-                      className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors disabled:opacity-30"
-                    >
-                      <ChevronDown className="h-3 w-3" />
-                    </button>
-                  </div>
-                </div>
-              )}
+              ))}
             </div>
-          ))}
-        </div>
+          </SortableContext>
+        </DndContext>
       </div>
     </Dialog>
+  );
+}
+
+function SortableItem({
+  suggestion: s,
+  editingId,
+  onEdit,
+  onDelete,
+  onToggle,
+  formProps,
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: s.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  if (editingId === s.id) {
+    return <SuggestionForm {...formProps} />;
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "flex items-center gap-2 px-2 py-1.5 rounded-md group hover:bg-muted/50 transition-colors",
+        !s.enabled && "opacity-50",
+        isDragging && "opacity-50 z-50 bg-muted"
+      )}
+    >
+      {/* Drag handle */}
+      <button
+        {...attributes}
+        {...listeners}
+        className="flex-shrink-0 cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground transition-colors touch-none"
+        title="Drag to reorder"
+      >
+        <GripVertical className="h-3.5 w-3.5" />
+      </button>
+
+      {/* Enable/disable toggle */}
+      <button
+        onClick={() => onToggle(s)}
+        title={s.enabled ? "Disable" : "Enable"}
+        className={cn(
+          "flex-shrink-0 h-4 w-4 rounded border transition-colors",
+          s.enabled
+            ? "bg-primary border-primary"
+            : "border-muted-foreground/40 hover:border-muted-foreground"
+        )}
+      >
+        {s.enabled && (
+          <Check className="h-3 w-3 text-primary-foreground mx-auto" />
+        )}
+      </button>
+
+      {/* Name + type badge */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm truncate">{s.name}</span>
+          <Badge
+            variant="secondary"
+            className="text-[10px] px-1.5 py-0 flex-shrink-0"
+          >
+            {s.actionType}
+          </Badge>
+          {s.builtIn && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 flex-shrink-0"
+            >
+              built-in
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        <button
+          onClick={() => onEdit(s)}
+          title="Edit"
+          className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
+        {!s.builtIn && (
+          <button
+            onClick={() => onDelete(s.id)}
+            title="Delete"
+            className="p-1 text-muted-foreground hover:text-destructive rounded transition-colors"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
