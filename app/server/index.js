@@ -631,6 +631,54 @@ app.delete("/api/workspace/:name", async (req, res) => {
   }
 });
 
+app.delete("/api/workspace/:name/worktree", async (req, res) => {
+  const dirName = req.params.name;
+  const ctx = getProfileContext(req);
+  if (!dirName || dirName.includes("/") || dirName.includes("..") || dirName.startsWith(".")) {
+    return res.status(400).json({ error: "Invalid directory name" });
+  }
+
+  const { worktreePath } = req.body;
+  if (!worktreePath) {
+    return res.status(400).json({ error: "worktreePath is required" });
+  }
+
+  const dirPath = path.join(ctx.workspaceRoot, dirName);
+  if (!fs.existsSync(dirPath)) {
+    return res.status(404).json({ error: "Project not found" });
+  }
+
+  const mainDir = await getMainWorktreeDir(dirPath);
+  if (!mainDir) {
+    return res.status(400).json({ error: "Not a git repository" });
+  }
+
+  // Don't allow removing the main worktree
+  if (worktreePath === mainDir) {
+    return res.status(400).json({ error: "Cannot remove the main worktree. Delete the project instead." });
+  }
+
+  // Find and abort/delete any agent associated with this worktree
+  const profileId = ctx.profileId;
+  const agentList = listAgents(profileId);
+  for (const agent of agentList) {
+    if (agent.workingDirectory === worktreePath) {
+      if (agent.status === "busy") {
+        abortAgent(agent.id);
+      }
+      deleteAgent(agent.id);
+    }
+  }
+
+  // Remove the worktree
+  const result = await removeWorktree(mainDir, worktreePath);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  res.status(204).end();
+});
+
 app.get("/api/workspace", async (req, res) => {
   const ctx = getProfileContext(req);
   const workspaceRoot = ctx.workspaceRoot;
@@ -1011,6 +1059,62 @@ app.get("/api/agents/:id/branches", async (req, res) => {
     ],
     worktrees: worktreeMap,
   });
+});
+
+app.delete("/api/agents/:id/branches/local", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const cwd = agent.workingDirectory;
+  try {
+    // Get current branch to avoid deleting it
+    const currentBranch = await gitExec(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+
+    // Get the default branch (usually main or master)
+    let defaultBranch = null;
+    try {
+      const originHead = await gitExec(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], cwd);
+      defaultBranch = originHead ? originHead.replace(/^origin\//, "") : null;
+    } catch {
+      // Fallback: check if main or master exists
+      const localBranches = await gitExec(["branch", "--format=%(refname:short)"], cwd);
+      const locals = localBranches ? localBranches.split("\n").filter(Boolean) : [];
+      if (locals.includes("main")) defaultBranch = "main";
+      else if (locals.includes("master")) defaultBranch = "master";
+    }
+
+    // Get all local branches
+    const localRaw = await gitExec(["branch", "--format=%(refname:short)"], cwd);
+    const local = localRaw ? localRaw.split("\n").filter(Boolean) : [];
+
+    // Get branches that have active worktrees (can't delete those)
+    const mainDir = await getMainWorktreeDir(cwd);
+    const wts = mainDir ? await listWorktrees(mainDir) : [];
+    const worktreeBranches = new Set(wts.map((wt) => wt.branch).filter(Boolean));
+
+    // Filter out current, default, and worktree branches
+    const protectedBranches = new Set([currentBranch, defaultBranch].filter(Boolean));
+    const toDelete = local.filter((b) => !protectedBranches.has(b) && !worktreeBranches.has(b));
+
+    if (toDelete.length === 0) {
+      return res.json({ ok: true, deleted: [], skipped: [], message: "No branches to delete" });
+    }
+
+    const deleted = [];
+    const skipped = [];
+    for (const branch of toDelete) {
+      try {
+        await execPromise("git", ["branch", "-D", branch], { cwd, timeout: 5000 });
+        deleted.push(branch);
+      } catch (err) {
+        skipped.push({ branch, reason: err.message || "Failed to delete" });
+      }
+    }
+
+    res.json({ ok: true, deleted, skipped });
+  } catch (err) {
+    res.status(400).json({ error: err.message || "Failed to delete local branches" });
+  }
 });
 
 app.post("/api/agents/:id/checkout", async (req, res) => {

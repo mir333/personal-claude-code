@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronRight, Search, LogOut, Clock, RefreshCw, AlertTriangle, X } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronRight, Search, LogOut, Clock, RefreshCw, AlertTriangle, X, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -205,6 +205,8 @@ function ProjectItem({
   onDeleteProject,
   onAddWorktree,
   onRemoveWorktree,
+  onRemoveWorktreeByPath,
+  onDeleteAllLocalBranches,
   findAgentByWorkDir,
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -328,8 +330,12 @@ function ProjectItem({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (agent && confirm(`Remove worktree "${wt.branch}"? This will delete the working directory for this branch.`)) {
-                        onRemoveWorktree(agent.id);
+                      if (confirm(`Remove worktree "${wt.branch}"? This will delete the working directory for this branch.`)) {
+                        if (agent) {
+                          onRemoveWorktree(agent.id);
+                        } else {
+                          onRemoveWorktreeByPath(project.name, wt.path);
+                        }
                       }
                     }}
                     className="text-muted-foreground hover:text-destructive shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -369,6 +375,22 @@ function ProjectItem({
               />
             )}
           </div>
+
+          {/* Remove all local branches button */}
+          {mainAgent && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (confirm(`Remove all local branches from "${project.name}"?\n\nThis will delete all local branches except the current branch, default branch (main/master), and branches with active worktrees.`)) {
+                  onDeleteAllLocalBranches(mainAgent.id);
+                }
+              }}
+              className="w-full flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-left transition-colors hover:bg-sidebar-accent/50 text-muted-foreground hover:text-destructive"
+            >
+              <Trash2 className="h-3 w-3 shrink-0" />
+              <span>Remove local branches</span>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -640,6 +662,8 @@ export default function Sidebar({
   scheduleCount = 0,
   onAddWorktree,
   onRemoveWorktree,
+  onRemoveWorktreeByPath,
+  onDeleteAllLocalBranches,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [showClone, setShowClone] = useState(false);
@@ -837,6 +861,8 @@ export default function Sidebar({
               onDeleteProject={onDeleteProject}
               onAddWorktree={onAddWorktree}
               onRemoveWorktree={onRemoveWorktree}
+              onRemoveWorktreeByPath={onRemoveWorktreeByPath}
+              onDeleteAllLocalBranches={onDeleteAllLocalBranches}
               findAgentByWorkDir={findAgentByWorkDir}
             />
           ))}

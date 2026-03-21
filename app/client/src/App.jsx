@@ -39,7 +39,7 @@ export default function App() {
   const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
   const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> [{ text }, ...] (FIFO queue)
   const terminalDataRef = useRef(null);
-  const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses, removeWorktree } = useAgents();
+  const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses, removeWorktree, removeWorktreeByPath, deleteAllLocalBranches } = useAgents();
   const { projects, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
@@ -671,6 +671,41 @@ export default function App() {
     await fetchDirectories();
   }
 
+  async function handleRemoveWorktreeByPath(projectName, worktreePath) {
+    try {
+      await removeWorktreeByPath(projectName, worktreePath);
+    } catch (err) {
+      alert(err.message || "Failed to remove worktree");
+      return;
+    }
+    // Clean up selected agent if it was in the removed worktree
+    const agentInWorktree = agents.find((a) => a.workingDirectory === worktreePath);
+    if (agentInWorktree && selectedAgentId === agentInWorktree.id) {
+      setSelectedAgentId(null);
+    }
+    if (agentInWorktree) {
+      setConversations((prev) => {
+        const next = { ...prev };
+        delete next[agentInWorktree.id];
+        return next;
+      });
+    }
+    await fetchDirectories();
+  }
+
+  async function handleDeleteAllLocalBranches(agentId) {
+    try {
+      const result = await deleteAllLocalBranches(agentId);
+      if (result.deleted && result.deleted.length > 0) {
+        alert(`Deleted ${result.deleted.length} local branch${result.deleted.length === 1 ? "" : "es"}:\n${result.deleted.join(", ")}${result.skipped?.length ? `\n\nSkipped: ${result.skipped.map((s) => s.branch).join(", ")}` : ""}`);
+      } else {
+        alert("No branches to delete. Current branch, default branch, and branches with active worktrees are protected.");
+      }
+    } catch (err) {
+      alert(err.message || "Failed to delete local branches");
+    }
+  }
+
   async function handleToggleInteractiveQuestions() {
     if (!selectedAgentId) return;
     const newValue = !interactiveQuestions[selectedAgentId];
@@ -800,6 +835,8 @@ export default function App() {
           scheduleCount={scheduleCount}
           onAddWorktree={handleAddWorktree}
           onRemoveWorktree={handleRemoveWorktree}
+          onRemoveWorktreeByPath={handleRemoveWorktreeByPath}
+          onDeleteAllLocalBranches={handleDeleteAllLocalBranches}
         />
       </div>
 

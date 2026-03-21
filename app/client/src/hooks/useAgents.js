@@ -116,6 +116,40 @@ export function useAgents() {
     });
   }, []);
 
+  const removeWorktreeByPath = useCallback(async (projectName, worktreePath) => {
+    const res = await fetch(`/api/workspace/${encodeURIComponent(projectName)}/worktree`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ worktreePath }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || "Failed to remove worktree");
+    }
+    // Remove any agent that was in that worktree path
+    setAgents((prev) => prev.filter((a) => a.workingDirectory !== worktreePath));
+    setGitStatuses((prev) => {
+      const next = { ...prev };
+      // Clean up git status entries for agents at this path
+      for (const [key, val] of Object.entries(prev)) {
+        const agent = agents.find((a) => a.id === key);
+        if (agent && agent.workingDirectory === worktreePath) {
+          delete next[key];
+        }
+      }
+      return next;
+    });
+  }, [agents]);
+
+  const deleteAllLocalBranches = useCallback(async (agentId) => {
+    const res = await fetch(`/api/agents/${agentId}/branches/local`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to delete local branches");
+    }
+    return data;
+  }, []);
+
   return {
     agents,
     gitStatuses,
@@ -129,5 +163,7 @@ export function useAgents() {
     fetchAllGitStatuses,
     addWorktree,
     removeWorktree,
+    removeWorktreeByPath,
+    deleteAllLocalBranches,
   };
 }
