@@ -19,6 +19,8 @@ import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useWorkspace } from "./hooks/useWorkspace.js";
 import { useNotifications } from "./hooks/useNotifications.js";
 import { useUsageStats } from "./hooks/useUsageStats.js";
+import { useSuggestions } from "./hooks/useSuggestions.js";
+import SuggestionManager from "./components/SuggestionManager.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import Terminal from "./components/Terminal.jsx";
 import CodeEditor from "./components/CodeEditor.jsx";
@@ -44,6 +46,15 @@ export default function App() {
   const { projects, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
+  const {
+    suggestions: allSuggestions,
+    fetchSuggestions,
+    createSuggestion: createSugg,
+    updateSuggestion: updateSugg,
+    deleteSuggestion: deleteSugg,
+    reorderSuggestions: reorderSuggs,
+  } = useSuggestions();
+  const [suggestionManagerOpen, setSuggestionManagerOpen] = useState(false);
   const messagesEndRef = useRef(null);
   const scrollAreaRef = useRef(null);
   const isLoadingMoreRef = useRef(false);
@@ -271,46 +282,78 @@ export default function App() {
     return null;
   })();
 
-  // Parse numbered options from last assistant message and compute contextual suggestions
+  // Context-aware suggestion computation from configurable suggestions
   const gitStatus = selectedAgentId ? gitStatuses[selectedAgentId] : null;
   const hasPR = !!(gitStatus?.pr);
   const prLabel = gitStatus?.pr?.provider === "gitlab" ? "MR" : "PR";
 
-  const { suggestions, options, actions } = (() => {
+  const { activeSuggestions, activeActions } = useMemo(() => {
     const conv = selectedConversation;
-    if (conv.length === 0) return { suggestions: [], options: [], actions: [] };
+    if (conv.length === 0 || allSuggestions.length === 0) {
+      return { activeSuggestions: [], activeActions: [] };
+    }
+
     const lastEntry = conv[conv.length - 1];
 
-    // Compute contextual suggestions
-    let sugg = [];
-    let acts = [];
+    // Derive active context tags based on conversation state
+    const activeContextTags = new Set();
+
     if (lastEntry.type === "stats") {
-      sugg = ["Continue", "Summarize changes", "Commit changes", "Push code", "Git Status", "Git Push"];
-      if (hasPR) {
-        sugg.push(`Review ${prLabel}`);
-        // Check if assistant responses look like a review (consider all messages)
-        const assistantMsgs = conv.filter((m) => m.type === "assistant_stream");
-        const totalLen = assistantMsgs.reduce((sum, m) => sum + m.text.length, 0);
-        if (assistantMsgs.length > 0 && totalLen > 100) {
-          acts.push({ label: `Post review to ${prLabel}`, action: "post-pr-review" });
-        }
-      }
+      activeContextTags.add("after_completion");
+      activeContextTags.add("git");
     } else if (lastEntry.type === "error") {
-      sugg = ["Try again", "Explain the error"];
+      activeContextTags.add("after_error");
+      activeContextTags.add("recovery");
     } else if (lastEntry.type === "context_cleared") {
-      sugg = ["Start fresh"];
+      activeContextTags.add("after_context_cleared");
+      activeContextTags.add("fresh_start");
     } else {
-      return { suggestions: [], options: [], actions: [] };
+      return { activeSuggestions: [], activeActions: [] };
     }
 
-    // Check if recent entries include Bash tool calls
+    // Conditional context tags
+    if (hasPR) activeContextTags.add("has_pr");
+
+    const assistantMsgs = conv.filter((m) => m.type === "assistant_stream");
+    const totalLen = assistantMsgs.reduce((sum, m) => sum + m.text.length, 0);
+    if (hasPR && assistantMsgs.length > 0 && totalLen > 100) {
+      activeContextTags.add("has_review_content");
+    }
+
     const recentSlice = conv.slice(-20);
     if (recentSlice.some((m) => m.type === "tool_call" && m.tool === "Bash")) {
-      if (!sugg.includes("Run tests")) sugg.push("Run tests");
+      activeContextTags.add("has_bash_calls");
     }
 
-    return { suggestions: sugg, options: [], actions: acts };
-  })();
+    // Filter: only enabled suggestions with at least one matching context tag
+    const eligible = allSuggestions.filter(
+      (s) => s.enabled && s.contextTags.some((tag) => activeContextTags.has(tag))
+    );
+
+    // Score: count of matching context tags (higher = more relevant)
+    const scored = eligible.map((s) => ({
+      ...s,
+      relevanceScore: s.contextTags.filter((tag) => activeContextTags.has(tag)).length,
+      // Interpolate template variables
+      displayName: s.name.replace(/\{\{prLabel\}\}/g, prLabel),
+      resolvedValue: s.actionValue.replace(/\{\{prLabel\}\}/g, prLabel),
+    }));
+
+    // Sort: primary by relevanceScore desc, secondary by order asc
+    scored.sort((a, b) => {
+      if (b.relevanceScore !== a.relevanceScore) return b.relevanceScore - a.relevanceScore;
+      return a.order - b.order;
+    });
+
+    // Separate platform actions from regular suggestions
+    const regularSuggestions = scored.filter((s) => s.actionType !== "platform");
+    const platformActions = scored.filter((s) => s.actionType === "platform");
+
+    return {
+      activeSuggestions: regularSuggestions,
+      activeActions: platformActions,
+    };
+  }, [selectedConversation, allSuggestions, hasPR, prLabel]);
 
   useEffect(() => {
     fetch("/api/auth/check")
@@ -343,7 +386,8 @@ export default function App() {
         .catch(() => {});
     });
     fetchDirectories();
-  }, [authenticated, fetchAgents, fetchDirectories]);
+    fetchSuggestions();
+  }, [authenticated, fetchAgents, fetchDirectories, fetchSuggestions]);
 
   useEffect(() => {
     if (!selectedAgentId) return;
@@ -790,6 +834,15 @@ export default function App() {
     }
   }
 
+  function handleSuggestionSelect(suggestion) {
+    if (suggestion.actionType === "platform") {
+      handleSuggestionAction(suggestion.resolvedValue);
+    } else {
+      // "prompt" and "skill" both send text as user message
+      handleSend(suggestion.resolvedValue);
+    }
+  }
+
   if (authenticated === null) {
     return <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">Loading...</div>;
   }
@@ -1098,7 +1151,7 @@ export default function App() {
                     <ArrowDown className="h-4 w-4" />
                   </button>
                 )}
-                <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
+                <SuggestionBar suggestions={activeSuggestions} actions={activeActions} onSelect={handleSuggestionSelect} onAction={(a) => handleSuggestionAction(a.resolvedValue)} onManage={() => setSuggestionManagerOpen(true)} />
                 <ChatInput key={selectedAgentId} onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} model={agentModels[selectedAgentId] || ""} onSetModel={handleSetModel} draftText={drafts[selectedAgentId]?.text || ""} draftFiles={drafts[selectedAgentId]?.attachedFiles || []} onDraftChange={(text, files) => setDrafts((prev) => ({ ...prev, [selectedAgentId]: { text, attachedFiles: files } }))} />
               </div>
             )}
@@ -1130,6 +1183,15 @@ export default function App() {
           </div>
         )}
       </div>
+      <SuggestionManager
+        open={suggestionManagerOpen}
+        onClose={() => setSuggestionManagerOpen(false)}
+        suggestions={allSuggestions}
+        onCreate={createSugg}
+        onUpdate={updateSugg}
+        onDelete={deleteSugg}
+        onReorder={reorderSuggs}
+      />
     </div>
   );
 }

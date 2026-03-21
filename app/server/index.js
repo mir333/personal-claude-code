@@ -1351,6 +1351,98 @@ app.post("/api/git-config", async (req, res) => {
   });
 });
 
+// --- Suggestion endpoints ---
+import {
+  initSuggestions,
+  listSuggestions,
+  getSuggestion,
+  createSuggestion,
+  updateSuggestion,
+  deleteSuggestion,
+  reorderSuggestions,
+  KNOWN_CONTEXT_TAGS,
+} from "./suggestions.js";
+
+app.get("/api/suggestions", (req, res) => {
+  const profileId = req.profile?.id || null;
+  res.json(listSuggestions(profileId));
+});
+
+app.post("/api/suggestions", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const { name, description, actionType, actionValue, contextTags, order, enabled } = req.body;
+
+  if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
+  if (!actionType || !["prompt", "skill", "platform"].includes(actionType)) {
+    return res.status(400).json({ error: "actionType must be one of: prompt, skill, platform" });
+  }
+  if (!actionValue || !actionValue.trim()) return res.status(400).json({ error: "actionValue is required" });
+  if (name.trim().length > 50) return res.status(400).json({ error: "name must be 50 characters or less" });
+  if (contextTags && !Array.isArray(contextTags)) return res.status(400).json({ error: "contextTags must be an array" });
+
+  try {
+    const suggestion = createSuggestion(profileId, {
+      name: name.trim(),
+      description: description || "",
+      actionType,
+      actionValue: actionValue.trim(),
+      contextTags: contextTags || [],
+      order,
+      enabled,
+    });
+    res.status(201).json(suggestion);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get("/api/suggestions/meta/context-tags", (_req, res) => {
+  res.json(KNOWN_CONTEXT_TAGS);
+});
+
+app.put("/api/suggestions/reorder", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const { orderedIds } = req.body;
+
+  if (!Array.isArray(orderedIds)) return res.status(400).json({ error: "orderedIds must be an array" });
+
+  const result = reorderSuggestions(profileId, orderedIds);
+  res.json(result);
+});
+
+app.get("/api/suggestions/:id", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const suggestion = getSuggestion(profileId, req.params.id);
+  if (!suggestion) return res.status(404).json({ error: "Suggestion not found" });
+  res.json(suggestion);
+});
+
+app.put("/api/suggestions/:id", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const suggestion = getSuggestion(profileId, req.params.id);
+  if (!suggestion) return res.status(404).json({ error: "Suggestion not found" });
+
+  const { name, actionType } = req.body;
+  if (name !== undefined && (!name || !name.trim())) return res.status(400).json({ error: "name cannot be empty" });
+  if (name && name.trim().length > 50) return res.status(400).json({ error: "name must be 50 characters or less" });
+  if (actionType && !["prompt", "skill", "platform"].includes(actionType)) {
+    return res.status(400).json({ error: "actionType must be one of: prompt, skill, platform" });
+  }
+
+  const updated = updateSuggestion(profileId, req.params.id, req.body);
+  res.json(updated);
+});
+
+app.delete("/api/suggestions/:id", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const suggestion = getSuggestion(profileId, req.params.id);
+  if (!suggestion) return res.status(404).json({ error: "Suggestion not found" });
+  if (suggestion.builtIn) return res.status(400).json({ error: "Cannot delete built-in suggestions. Disable them instead." });
+
+  deleteSuggestion(profileId, req.params.id);
+  res.status(204).end();
+});
+
 // --- Task endpoints ---
 import {
   createTask,
@@ -1749,6 +1841,11 @@ wss.on("connection", (ws) => {
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Claude Web UI running on http://0.0.0.0:${PORT}`);
+  // Initialize suggestions for all profiles
+  const allProfiles = listProfiles();
+  for (const profile of allProfiles) {
+    initSuggestions(profile.id);
+  }
   // Start the task scheduler after server is ready
   startTaskScheduler();
 });
