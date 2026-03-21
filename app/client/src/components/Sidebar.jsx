@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, Search, LogOut, Clock, RefreshCw, AlertTriangle } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, ChevronRight, Search, LogOut, Clock, RefreshCw, AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,148 +16,370 @@ const STATUS_COLORS = {
 };
 
 const GIT_STATE = {
-  dirty: { color: "text-yellow-500", label: "Uncommitted changes" },
+  dirty: { color: "text-yellow-500", label: "Uncommitted changes", indicator: "*" },
   ahead: { color: "text-blue-500", label: "Unpushed commits" },
   clean: { color: "text-green-500", label: "Up to date" },
 };
 
-function GitStatus({ git, agentId, onBranchChange }) {
+/* ------------------------------------------------------------------ */
+/*  Inline branch state indicator (shown next to branch name)          */
+/* ------------------------------------------------------------------ */
+function BranchStateIndicator({ git }) {
   if (!git || !git.isRepo) return null;
   const info = GIT_STATE[git.state] || GIT_STATE.clean;
-  const [open, setOpen] = useState(false);
+  return (
+    <span className={cn("text-[10px] shrink-0", info.color)} title={info.label}>
+      {git.state === "dirty" && "*"}
+      {git.state === "ahead" && git.unpushed > 0 && `${git.unpushed}\u2191`}
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Add Worktree Dialog (branch picker dropdown)                       */
+/* ------------------------------------------------------------------ */
+function AddWorktreeDropdown({ agentId, onCreated, onClose }) {
   const [branches, setBranches] = useState([]);
-  const [current, setCurrent] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [switching, setSwitching] = useState(null);
+  const [existingWorktrees, setExistingWorktrees] = useState({});
   const [filter, setFilter] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(null);
   const [error, setError] = useState("");
+  const [newBranchMode, setNewBranchMode] = useState(false);
+  const [newBranchName, setNewBranchName] = useState("");
   const dropdownRef = useRef(null);
 
   useEffect(() => {
-    if (!open) return;
     function handleClickOutside(e) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setOpen(false);
+        onClose();
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open]);
+  }, [onClose]);
 
-  function handleOpen(e) {
-    e.stopPropagation();
-    if (open) { setOpen(false); return; }
-    setOpen(true);
-    setFilter("");
-    setError("");
+  useEffect(() => {
     setLoading(true);
+    setError("");
     fetch(`/api/agents/${agentId}/branches`)
       .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
       .then(({ ok, data }) => {
         if (ok) {
           setBranches(data.branches || []);
-          setCurrent(data.current || "");
+          setExistingWorktrees(data.worktrees || {});
         } else {
           setError(data.error || "Failed to load branches");
         }
       })
       .catch(() => setError("Failed to load branches"))
       .finally(() => setLoading(false));
-  }
+  }, [agentId]);
 
-  async function handleCheckout(branchName) {
-    if (branchName === current) { setOpen(false); return; }
-    setSwitching(branchName);
+  async function handleSelect(branchName, createBranch = false) {
+    setCreating(branchName);
     setError("");
     try {
-      const res = await fetch(`/api/agents/${agentId}/checkout`, {
+      const res = await fetch(`/api/agents/${agentId}/worktree`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ branch: branchName }),
+        body: JSON.stringify({ branch: branchName, createBranch }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setCurrent(data.branch);
-      setOpen(false);
-      if (onBranchChange) onBranchChange(agentId);
+      onCreated(data);
     } catch (err) {
-      setError(err.message || "Failed to checkout");
-    } finally {
-      setSwitching(null);
+      setError(err.message || "Failed to create worktree");
+      setCreating(null);
     }
   }
 
+  async function handleCreateNewBranch() {
+    const name = newBranchName.trim();
+    if (!name) return;
+    await handleSelect(name, true);
+  }
+
+  // Filter branches, excluding those that already have worktrees
   const filtered = branches.filter((b) =>
     b.name.toLowerCase().includes(filter.toLowerCase())
   );
 
   return (
-    <div className="relative" ref={dropdownRef}>
-      <button
-        onClick={handleOpen}
-        className={cn("flex items-center gap-1 text-xs hover:underline", info.color)}
-        title={`${info.label} — click to switch branch`}
-      >
-        <GitBranch className="h-3 w-3 shrink-0" />
-        <span className="truncate">{git.branch}</span>
-        {git.state === "dirty" && <span>*</span>}
-        {git.state === "ahead" && git.unpushed > 0 && <span>{git.unpushed}↑</span>}
-        <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
-      </button>
-
-      {open && (
-        <div className="absolute left-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-popover shadow-md">
-          <div className="p-1.5">
-            <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-              <Input
-                placeholder="Filter branches..."
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                className="pl-7 h-7 text-xs"
-                autoFocus
-                onClick={(e) => e.stopPropagation()}
-              />
-            </div>
-          </div>
-          {error && <p className="text-destructive text-xs px-3 pb-2">{error}</p>}
-          {loading ? (
-            <div className="flex items-center justify-center py-4 text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
-              <span className="text-xs">Loading...</span>
+    <div ref={dropdownRef} className="absolute left-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-popover shadow-md">
+      <div className="p-1.5">
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+          <Input
+            placeholder="Filter branches..."
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="pl-7 h-7 text-xs"
+            autoFocus
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      </div>
+      {error && <p className="text-destructive text-xs px-3 pb-2">{error}</p>}
+      {loading ? (
+        <div className="flex items-center justify-center py-4 text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
+          <span className="text-xs">Loading...</span>
+        </div>
+      ) : (
+        <div className="max-h-52 overflow-y-auto pb-1">
+          {/* New branch option */}
+          {newBranchMode ? (
+            <div className="px-2 py-1.5">
+              <div className="flex items-center gap-1">
+                <Input
+                  placeholder="Branch name..."
+                  value={newBranchName}
+                  onChange={(e) => setNewBranchName(e.target.value)}
+                  className="h-6 text-xs flex-1"
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleCreateNewBranch(); if (e.key === "Escape") setNewBranchMode(false); }}
+                />
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleCreateNewBranch(); }}
+                  disabled={!newBranchName.trim() || !!creating}
+                  className="text-xs px-2 py-0.5 bg-primary text-primary-foreground rounded disabled:opacity-50 shrink-0"
+                >
+                  {creating ? <Loader2 className="h-3 w-3 animate-spin" /> : "Create"}
+                </button>
+              </div>
             </div>
           ) : (
-            <div className="max-h-48 overflow-y-auto pb-1">
-              {filtered.length === 0 && (
-                <p className="text-xs text-muted-foreground text-center py-3">
-                  {filter ? "No matching branches" : "No branches found"}
-                </p>
-              )}
-              {filtered.map((b) => (
-                <button
-                  key={b.name}
-                  onClick={(e) => { e.stopPropagation(); handleCheckout(b.name); }}
-                  disabled={!!switching}
-                  className={cn(
-                    "w-full text-left px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors",
-                    "hover:bg-accent disabled:opacity-50",
-                    b.name === current && "font-semibold text-primary"
-                  )}
-                >
-                  <span className="truncate flex-1">{b.name}</span>
-                  {!b.local && <span className="text-muted-foreground/60 shrink-0">remote</span>}
-                  {b.name === current && <span className="text-primary shrink-0">*</span>}
-                  {switching === b.name && <Loader2 className="h-3 w-3 animate-spin shrink-0" />}
-                </button>
-              ))}
-            </div>
+            <button
+              onClick={(e) => { e.stopPropagation(); setNewBranchMode(true); }}
+              className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors hover:bg-accent text-primary"
+            >
+              <Plus className="h-3 w-3 shrink-0" />
+              <span>Create new branch</span>
+            </button>
           )}
+          <Separator className="my-1" />
+          {filtered.length === 0 && (
+            <p className="text-xs text-muted-foreground text-center py-3">
+              {filter ? "No matching branches" : "No branches found"}
+            </p>
+          )}
+          {filtered.map((b) => {
+            const hasWorktree = !!existingWorktrees[b.name];
+            return (
+              <button
+                key={b.name}
+                onClick={(e) => { e.stopPropagation(); if (!hasWorktree) handleSelect(b.name); }}
+                disabled={hasWorktree || !!creating}
+                className={cn(
+                  "w-full text-left px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors",
+                  hasWorktree
+                    ? "opacity-40 cursor-default"
+                    : "hover:bg-accent disabled:opacity-50",
+                )}
+              >
+                <GitBranch className="h-3 w-3 shrink-0" />
+                <span className="truncate flex-1">{b.name}</span>
+                {!b.local && <span className="text-muted-foreground/60 shrink-0">remote</span>}
+                {hasWorktree && <span className="text-muted-foreground/60 shrink-0 text-[10px]">active</span>}
+                {creating === b.name && <Loader2 className="h-3 w-3 animate-spin shrink-0" />}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Project item with worktree sub-items                               */
+/* ------------------------------------------------------------------ */
+function ProjectItem({
+  project,
+  agents,
+  gitStatuses,
+  selectedId,
+  onSelect,
+  onCreate,
+  onDeleteProject,
+  onAddWorktree,
+  onRemoveWorktree,
+  findAgentByWorkDir,
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [addingWorktree, setAddingWorktree] = useState(false);
+
+  const isRepo = project.isRepo && project.worktrees && project.worktrees.length > 0;
+  const hasAnySelected = project.worktrees?.some((wt) => {
+    const agent = findAgentByWorkDir(wt.path);
+    return agent && agent.id === selectedId;
+  });
+
+  // For non-git projects or repos with no worktree data, fall back to single-item behavior
+  if (!isRepo) {
+    const agent = findAgentByWorkDir(project.path);
+    const isSelected = agent && agent.id === selectedId;
+    return (
+      <div
+        onClick={() => {
+          if (agent) {
+            onSelect(agent.id);
+          } else {
+            onCreate(project.name, project.path).then((a) => onSelect(a.id));
+          }
+        }}
+        className={cn(
+          "w-full flex items-center gap-2 rounded-md px-2 py-2 text-sm text-left transition-colors cursor-pointer group",
+          isSelected
+            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+            : "hover:bg-sidebar-accent/50"
+        )}
+      >
+        <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate">{project.name}</div>
+        </div>
+        {agent && (
+          <Circle
+            className={cn("h-2.5 w-2.5 shrink-0 fill-current", STATUS_COLORS[agent.status] || "text-muted-foreground")}
+          />
+        )}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (confirm(`Delete project "${project.name}"? This will permanently remove the directory and all its files.`)) {
+              onDeleteProject(project.name, agent?.id);
+            }
+          }}
+          className="text-muted-foreground hover:text-destructive text-sm shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  // Find an agent for this project (use main worktree agent as the reference for add-worktree calls)
+  const mainWorktree = project.worktrees.find((wt) => wt.isMain);
+  const mainAgent = mainWorktree ? findAgentByWorkDir(mainWorktree.path) : null;
+
+  return (
+    <div>
+      {/* Project header row */}
+      <div
+        className={cn(
+          "w-full flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-left transition-colors cursor-pointer group",
+          hasAnySelected ? "text-sidebar-accent-foreground" : ""
+        )}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <ChevronRight className={cn("h-3 w-3 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")} />
+        <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="truncate flex-1 font-medium">{project.name}</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            const mainAgent = findAgentByWorkDir(project.path);
+            if (confirm(`Delete project "${project.name}"? This will permanently remove the directory, all worktrees, and their files.`)) {
+              onDeleteProject(project.name, mainAgent?.id);
+            }
+          }}
+          className="text-muted-foreground hover:text-destructive text-sm shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* Worktree children */}
+      {expanded && (
+        <div className="ml-4 pl-2 border-l border-border/50">
+          {project.worktrees.map((wt) => {
+            const agent = findAgentByWorkDir(wt.path);
+            const isSelected = agent && agent.id === selectedId;
+            const git = agent ? gitStatuses[agent.id] : null;
+
+            return (
+              <div
+                key={wt.path}
+                onClick={() => {
+                  if (agent) {
+                    onSelect(agent.id);
+                  } else {
+                    // Auto-create agent for this worktree path
+                    onCreate(project.name + " (" + wt.branch + ")", wt.path).then((a) => onSelect(a.id));
+                  }
+                }}
+                className={cn(
+                  "w-full flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-left transition-colors cursor-pointer group",
+                  isSelected
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "hover:bg-sidebar-accent/50"
+                )}
+              >
+                <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="truncate flex-1 text-xs">{wt.branch || "(detached)"}</span>
+                <BranchStateIndicator git={git} />
+                {agent && (
+                  <Circle
+                    className={cn("h-2 w-2 shrink-0 fill-current", STATUS_COLORS[agent.status] || "text-muted-foreground")}
+                  />
+                )}
+                {!wt.isMain && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (agent && confirm(`Remove worktree "${wt.branch}"? This will delete the working directory for this branch.`)) {
+                        onRemoveWorktree(agent.id);
+                      }
+                    }}
+                    className="text-muted-foreground hover:text-destructive shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Add worktree button */}
+          <div className="relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                // Ensure main agent exists first
+                if (!mainAgent) {
+                  onCreate(project.name, project.path).then(() => setAddingWorktree(true));
+                } else {
+                  setAddingWorktree(!addingWorktree);
+                }
+              }}
+              className="w-full flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-left transition-colors hover:bg-sidebar-accent/50 text-muted-foreground hover:text-foreground"
+            >
+              <Plus className="h-3 w-3 shrink-0" />
+              <span>Another</span>
+            </button>
+            {addingWorktree && mainAgent && (
+              <AddWorktreeDropdown
+                agentId={mainAgent.id}
+                onCreated={(data) => {
+                  setAddingWorktree(false);
+                  onAddWorktree(data);
+                }}
+                onClose={() => setAddingWorktree(false)}
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Settings panel (unchanged from original)                           */
+/* ------------------------------------------------------------------ */
 const SETTINGS_TABS = [
   { id: "user", label: "User" },
   { id: "github", label: "GitHub" },
@@ -358,7 +580,7 @@ function GitSettingsPanel({ onClose }) {
           <Settings className="h-4 w-4 text-muted-foreground" />
           <h2 className="text-sm font-semibold">Settings</h2>
         </div>
-        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-sm leading-none">✕</button>
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-sm leading-none">{"\u2715"}</button>
       </div>
 
       <div className="flex gap-1 border-b border-border">
@@ -395,6 +617,9 @@ function GitSettingsPanel({ onClose }) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Main Sidebar component                                             */
+/* ------------------------------------------------------------------ */
 export default function Sidebar({
   agents,
   selectedId,
@@ -405,6 +630,7 @@ export default function Sidebar({
   onDeleteProject,
   onBranchChange,
   onRefresh,
+  projects = [],
   directories,
   findAgentByWorkDir,
   notificationsEnabled,
@@ -416,6 +642,8 @@ export default function Sidebar({
   currentView = "chat",
   onNavigate,
   scheduleCount = 0,
+  onAddWorktree,
+  onRemoveWorktree,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [showClone, setShowClone] = useState(false);
@@ -449,13 +677,14 @@ export default function Sidebar({
     setShowForm(false);
   }
 
-  async function handleDirClick(dir) {
-    const existing = findAgentByWorkDir(dir.path);
-    if (existing) {
-      onSelect(existing.id);
-    } else {
-      const agent = await onCreate(dir.name, dir.path);
-      onSelect(agent.id);
+  // Collect all worktree paths for "Custom Agents" filtering
+  const allProjectPaths = new Set();
+  for (const p of projects) {
+    allProjectPaths.add(p.path);
+    if (p.worktrees) {
+      for (const wt of p.worktrees) {
+        allProjectPaths.add(wt.path);
+      }
     }
   }
 
@@ -496,7 +725,7 @@ export default function Sidebar({
                 onClick={toggleNotifications}
                 title={
                   notificationsEnabled && notificationsPermissionDenied
-                    ? "Notifications blocked by browser — click to retry"
+                    ? "Notifications blocked by browser \u2014 click to retry"
                     : notificationsEnabled
                     ? "Disable notifications"
                     : "Enable notifications"
@@ -554,7 +783,7 @@ export default function Sidebar({
                 onClick={toggleNotifications}
                 title={
                   notificationsEnabled && notificationsPermissionDenied
-                    ? "Notifications blocked by browser — click to retry"
+                    ? "Notifications blocked by browser \u2014 click to retry"
                     : notificationsEnabled
                     ? "Disable notifications"
                     : "Enable notifications"
@@ -594,55 +823,32 @@ export default function Sidebar({
               <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
             </button>
           </div>
-          {directories.length === 0 && (
+          {projects.length === 0 && (
             <div className="flex flex-col items-center py-6 px-2 text-center">
               <FolderOpen className="h-10 w-10 text-muted-foreground/20 mb-2" />
               <p className="text-xs text-muted-foreground mb-1">No projects yet</p>
               <p className="text-[11px] text-muted-foreground/60">Create a project or clone a repo to get started</p>
             </div>
           )}
-          {directories.map((dir) => {
-            const agent = findAgentByWorkDir(dir.path);
-            const isSelected = agent && agent.id === selectedId;
-            return (
-              <div
-                key={dir.path}
-                onClick={() => handleDirClick(dir)}
-                className={cn(
-                  "w-full flex items-center gap-2 rounded-md px-2 py-2 text-sm text-left transition-colors cursor-pointer group",
-                  isSelected
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "hover:bg-sidebar-accent/50"
-                )}
-              >
-                <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate">{dir.name}</div>
-                  {agent && <GitStatus git={gitStatuses[agent.id]} agentId={agent.id} onBranchChange={onBranchChange} />}
-                </div>
-                {agent && (
-                  <Circle
-                    className={cn("h-2.5 w-2.5 shrink-0 fill-current", STATUS_COLORS[agent.status] || "text-muted-foreground")}
-                  />
-                )}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (confirm(`Delete project "${dir.name}"? This will permanently remove the directory and all its files.`)) {
-                      onDeleteProject(dir.name, agent?.id);
-                    }
-                  }}
-                  className="text-muted-foreground hover:text-destructive text-sm shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  ✕
-                </button>
-              </div>
-            );
-          })}
+          {projects.map((project) => (
+            <ProjectItem
+              key={project.path}
+              project={project}
+              agents={agents}
+              gitStatuses={gitStatuses}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              onCreate={onCreate}
+              onDeleteProject={onDeleteProject}
+              onAddWorktree={onAddWorktree}
+              onRemoveWorktree={onRemoveWorktree}
+              findAgentByWorkDir={findAgentByWorkDir}
+            />
+          ))}
         </div>
 
-        {/* Agents not linked to a workspace dir */}
-        {agents.filter((a) => !directories.some((d) => d.path === a.workingDirectory)).length > 0 && (
+        {/* Agents not linked to any project or worktree */}
+        {agents.filter((a) => !allProjectPaths.has(a.workingDirectory)).length > 0 && (
           <>
             <Separator className="my-1" />
             <div className="p-2">
@@ -650,7 +856,7 @@ export default function Sidebar({
                 Custom Agents
               </p>
               {agents
-                .filter((a) => !directories.some((d) => d.path === a.workingDirectory))
+                .filter((a) => !allProjectPaths.has(a.workingDirectory))
                 .map((agent) => (
                   <div
                     key={agent.id}
@@ -668,7 +874,6 @@ export default function Sidebar({
                     <div className="min-w-0 flex-1">
                       <div className="truncate">{agent.name}</div>
                       <div className="text-xs text-muted-foreground truncate">{agent.workingDirectory}</div>
-                      <GitStatus git={gitStatuses[agent.id]} agentId={agent.id} onBranchChange={onBranchChange} />
                     </div>
                     <button
                       onClick={(e) => {
@@ -677,7 +882,7 @@ export default function Sidebar({
                       }}
                       className="text-muted-foreground hover:text-destructive text-sm shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
                     >
-                      ✕
+                      <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 ))}

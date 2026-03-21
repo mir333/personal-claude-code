@@ -88,5 +88,46 @@ export function useAgents() {
     await Promise.all(current.map((a) => fetchGitStatus(a.id)));
   }, [agents, fetchGitStatus]);
 
-  return { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses };
+  const addWorktree = useCallback(async (agentId, branch, createBranch = false) => {
+    const res = await fetch(`/api/agents/${agentId}/worktree`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ branch, createBranch }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to create worktree");
+    }
+    setAgents((prev) => [...prev, data.agent]);
+    return data;
+  }, []);
+
+  const removeWorktree = useCallback(async (agentId) => {
+    const res = await fetch(`/api/agents/${agentId}/worktree`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || "Failed to remove worktree");
+    }
+    setAgents((prev) => prev.filter((a) => a.id !== agentId));
+    setGitStatuses((prev) => {
+      const next = { ...prev };
+      delete next[agentId];
+      return next;
+    });
+  }, []);
+
+  return {
+    agents,
+    gitStatuses,
+    fetchAgents,
+    createAgent,
+    cloneRepo,
+    removeAgent,
+    updateAgentStatus,
+    findAgentByWorkDir,
+    fetchGitStatus,
+    fetchAllGitStatuses,
+    addWorktree,
+    removeWorktree,
+  };
 }

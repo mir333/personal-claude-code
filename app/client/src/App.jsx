@@ -37,8 +37,8 @@ export default function App() {
   const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
   const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> [{ text }, ...] (FIFO queue)
   const terminalDataRef = useRef(null);
-  const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses } = useAgents();
-  const { directories, fetchDirectories } = useWorkspace();
+  const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses, addWorktree, removeWorktree } = useAgents();
+  const { projects, directories, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
   const messagesEndRef = useRef(null);
@@ -638,6 +638,33 @@ export default function App() {
     setConversations({});
   }
 
+  async function handleAddWorktree(data) {
+    // data = { agent: { id, name, workingDirectory, ... }, worktree: { branch, path, isMain } }
+    // The agent was already added to state by useAgents.addWorktree
+    // Refresh workspace to reflect the new worktree in sidebar
+    await fetchDirectories();
+    // Select the new agent
+    handleSelectAgent(data.agent.id);
+    // Fetch git status for the new agent
+    fetchGitStatus(data.agent.id);
+  }
+
+  async function handleRemoveWorktree(agentId) {
+    try {
+      await removeWorktree(agentId);
+    } catch (err) {
+      alert(err.message || "Failed to remove worktree");
+      return;
+    }
+    if (selectedAgentId === agentId) setSelectedAgentId(null);
+    setConversations((prev) => {
+      const next = { ...prev };
+      delete next[agentId];
+      return next;
+    });
+    await fetchDirectories();
+  }
+
   async function handleToggleInteractiveQuestions() {
     if (!selectedAgentId) return;
     const newValue = !interactiveQuestions[selectedAgentId];
@@ -755,6 +782,7 @@ export default function App() {
               fetchAllGitStatuses(),
             ]);
           }}
+          projects={projects}
           directories={directories}
           findAgentByWorkDir={findAgentByWorkDir}
           notificationsEnabled={notificationsEnabled}
@@ -766,6 +794,8 @@ export default function App() {
           currentView={currentView}
           onNavigate={handleNavigate}
           scheduleCount={scheduleCount}
+          onAddWorktree={handleAddWorktree}
+          onRemoveWorktree={handleRemoveWorktree}
         />
       </div>
 

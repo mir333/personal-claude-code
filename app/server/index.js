@@ -58,6 +58,14 @@ import {
   fetchPrInfo,
   buildCloneUrl,
 } from "./providers.js";
+import {
+  listWorktrees,
+  addWorktree,
+  removeWorktree,
+  getMainWorktreeDir,
+  sanitizeBranchName,
+  buildWorktreePath,
+} from "./worktrees.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -573,7 +581,7 @@ app.delete("/api/agents/:id", (req, res) => {
   res.status(204).end();
 });
 
-app.delete("/api/workspace/:name", (req, res) => {
+app.delete("/api/workspace/:name", async (req, res) => {
   const dirName = req.params.name;
   const ctx = getProfileContext(req);
   if (!dirName || dirName.includes("/") || dirName.includes("..") || dirName.startsWith(".")) {
@@ -583,14 +591,39 @@ app.delete("/api/workspace/:name", (req, res) => {
   if (!fs.existsSync(dirPath)) {
     return res.status(404).json({ error: "Directory not found" });
   }
-  // Also delete any agent associated with this directory
+
   const profileId = ctx.profileId;
   const agentList = listAgents(profileId);
+
+  // If this is a main worktree, clean up all linked worktrees first
+  try {
+    const mainDir = await getMainWorktreeDir(dirPath);
+    if (mainDir && mainDir === dirPath) {
+      const wts = await listWorktrees(dirPath);
+      for (const wt of wts) {
+        if (!wt.isMain) {
+          // Delete agents for this worktree
+          for (const agent of agentList) {
+            if (agent.workingDirectory === wt.path) {
+              deleteAgent(agent.id);
+            }
+          }
+          // Remove the worktree
+          await removeWorktree(dirPath, wt.path);
+        }
+      }
+    }
+  } catch {
+    // non-critical, continue with deletion
+  }
+
+  // Delete any agent associated with this directory
   for (const agent of agentList) {
     if (agent.workingDirectory === dirPath) {
       deleteAgent(agent.id);
     }
   }
+
   try {
     fs.rmSync(dirPath, { recursive: true, force: true });
     res.json({ ok: true });
@@ -605,10 +638,54 @@ app.get("/api/workspace", async (req, res) => {
   try {
     fs.mkdirSync(workspaceRoot, { recursive: true });
     const entries = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
-    const dirs = entries
+    const allDirs = entries
       .filter((e) => e.isDirectory() && !e.name.startsWith("."))
       .map((e) => ({ name: e.name, path: path.join(workspaceRoot, e.name) }));
-    res.json(dirs);
+
+    // Build structured response with worktree grouping
+    const worktreeSiblings = new Set(); // tracks dirs that are linked worktrees of another project
+    const projects = [];
+
+    // First pass: identify main repos and their worktrees
+    for (const dir of allDirs) {
+      const topLevel = await gitExec(["rev-parse", "--show-toplevel"], dir.path);
+      const isRepo = topLevel !== null;
+      if (!isRepo) {
+        projects.push({ name: dir.name, path: dir.path, isRepo: false, worktrees: [] });
+        continue;
+      }
+
+      // Check if this directory is a linked worktree of another project
+      const mainDir = await getMainWorktreeDir(dir.path);
+      if (mainDir && mainDir !== dir.path) {
+        // This is a linked worktree — will be grouped under its main project
+        worktreeSiblings.add(dir.path);
+        continue;
+      }
+
+      // This is a main worktree — list its worktrees
+      const wts = await listWorktrees(dir.path);
+      projects.push({
+        name: dir.name,
+        path: dir.path,
+        isRepo: true,
+        worktrees: wts.map((wt) => ({
+          branch: wt.branch,
+          path: wt.path,
+          isMain: wt.isMain,
+        })),
+      });
+    }
+
+    // Second pass: add any orphaned worktree sibling dirs that weren't claimed
+    for (const dir of allDirs) {
+      if (worktreeSiblings.has(dir.path) && !projects.some((p) => p.worktrees.some((wt) => wt.path === dir.path))) {
+        // Orphaned worktree dir — show as standalone project
+        projects.push({ name: dir.name, path: dir.path, isRepo: true, worktrees: [] });
+      }
+    }
+
+    res.json(projects);
   } catch {
     res.json([]);
   }
@@ -783,12 +860,21 @@ app.get("/api/agents/:id/branches", async (req, res) => {
   const seen = new Set(local);
   const remoteOnly = remote.filter((b) => !seen.has(b));
 
+  // Also include worktree mapping so UI knows which branches already have worktrees
+  const mainDir = await getMainWorktreeDir(cwd);
+  const wts = mainDir ? await listWorktrees(mainDir) : [];
+  const worktreeMap = {};
+  for (const wt of wts) {
+    if (wt.branch) worktreeMap[wt.branch] = wt.path;
+  }
+
   res.json({
     current: currentBranch || "HEAD",
     branches: [
       ...local.map((b) => ({ name: b, local: true })),
       ...remoteOnly.map((b) => ({ name: b, local: false })),
     ],
+    worktrees: worktreeMap,
   });
 });
 
@@ -810,6 +896,110 @@ app.post("/api/agents/:id/checkout", async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message || "Failed to checkout branch" });
   }
+});
+
+// --- Worktree endpoints ---
+
+app.get("/api/agents/:id/worktrees", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const cwd = agent.workingDirectory;
+  const mainDir = await getMainWorktreeDir(cwd);
+  if (!mainDir) {
+    return res.status(400).json({ error: "Not a git repository" });
+  }
+
+  const wts = await listWorktrees(mainDir);
+  res.json({
+    mainDir,
+    worktrees: wts.map((wt) => ({
+      branch: wt.branch,
+      path: wt.path,
+      isMain: wt.isMain,
+    })),
+  });
+});
+
+app.post("/api/agents/:id/worktree", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const { branch, createBranch } = req.body;
+  if (!branch || !branch.trim()) {
+    return res.status(400).json({ error: "branch is required" });
+  }
+
+  const cwd = agent.workingDirectory;
+  const mainDir = await getMainWorktreeDir(cwd);
+  if (!mainDir) {
+    return res.status(400).json({ error: "Not a git repository" });
+  }
+
+  // Check if a worktree for this branch already exists
+  const existing = await listWorktrees(mainDir);
+  if (existing.some((wt) => wt.branch === branch.trim())) {
+    return res.status(409).json({ error: `Worktree for branch "${branch}" already exists` });
+  }
+
+  const targetPath = buildWorktreePath(mainDir, branch.trim());
+  const result = await addWorktree(mainDir, branch.trim(), targetPath, !!createBranch);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  // Auto-create an agent for the new worktree
+  const projectName = path.basename(mainDir);
+  const agentName = `${projectName} (${branch.trim()})`;
+  const profileId = agent.profileId;
+  const newAgent = createAgent(agentName, targetPath, profileId);
+
+  res.status(201).json({
+    agent: {
+      id: newAgent.id,
+      name: newAgent.name,
+      workingDirectory: newAgent.workingDirectory,
+      status: newAgent.status,
+      profileId: newAgent.profileId,
+    },
+    worktree: {
+      branch: branch.trim(),
+      path: targetPath,
+      isMain: false,
+    },
+  });
+});
+
+app.delete("/api/agents/:id/worktree", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const cwd = agent.workingDirectory;
+  const mainDir = await getMainWorktreeDir(cwd);
+  if (!mainDir) {
+    return res.status(400).json({ error: "Not a git repository" });
+  }
+
+  // Don't allow removing the main worktree
+  if (cwd === mainDir) {
+    return res.status(400).json({ error: "Cannot remove the main worktree. Delete the project instead." });
+  }
+
+  // Abort agent if busy
+  if (agent.status === "busy") {
+    abortAgent(req.params.id);
+  }
+
+  // Remove the worktree
+  const result = await removeWorktree(mainDir, cwd);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  // Delete the agent
+  deleteAgent(req.params.id);
+
+  res.status(204).end();
 });
 
 app.patch("/api/agents/:id/settings", (req, res) => {
