@@ -833,6 +833,140 @@ app.get("/api/agents/:id/git-status", async (req, res) => {
   res.json({ isRepo: true, branch: branch || "unknown", state, unpushed, pr });
 });
 
+// --- File browsing / editing endpoints ---
+
+const EXT_TO_LANGUAGE = {
+  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+  ts: "typescript", tsx: "typescript", mts: "typescript",
+  py: "python", rb: "ruby", go: "go", rs: "rust", java: "java",
+  json: "json", md: "markdown", css: "css", scss: "scss", less: "less",
+  html: "html", htm: "html", xml: "xml", svg: "xml",
+  yaml: "yaml", yml: "yaml", toml: "toml",
+  sh: "shell", bash: "shell", zsh: "shell", fish: "shell",
+  sql: "sql", graphql: "graphql",
+  c: "c", cpp: "cpp", h: "cpp", hpp: "cpp",
+  cs: "csharp", swift: "swift", kt: "kotlin",
+  php: "php", lua: "lua", r: "r", pl: "perl",
+  dockerfile: "dockerfile", makefile: "makefile",
+  ini: "ini", conf: "ini", env: "ini",
+  txt: "plaintext", log: "plaintext", csv: "plaintext",
+};
+
+const BINARY_EXTENSIONS = new Set([
+  "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg",
+  "mp3", "mp4", "wav", "ogg", "webm", "avi", "mov",
+  "zip", "tar", "gz", "bz2", "7z", "rar",
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+  "exe", "dll", "so", "dylib", "bin",
+  "woff", "woff2", "ttf", "eot", "otf",
+  "pyc", "class", "o", "a",
+]);
+
+function detectLanguage(filePath) {
+  const base = path.basename(filePath).toLowerCase();
+  if (base === "dockerfile") return "dockerfile";
+  if (base === "makefile") return "makefile";
+  const ext = base.split(".").pop();
+  return EXT_TO_LANGUAGE[ext] || "plaintext";
+}
+
+function resolveAgentPath(agent, relativePath) {
+  const resolved = path.resolve(agent.workingDirectory, relativePath || ".");
+  const base = agent.workingDirectory.replace(/\/+$/, "");
+  if (resolved !== base && !resolved.startsWith(base + "/")) return null;
+  return resolved;
+}
+
+const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
+
+app.get("/api/agents/:id/files", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const resolved = resolveAgentPath(agent, req.query.path);
+  if (!resolved) return res.status(400).json({ error: "Invalid path" });
+
+  try {
+    const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
+    const items = entries
+      .filter((e) => e.name !== ".git" && !e.name.startsWith(".claude"))
+      .map((e) => ({
+        name: e.name,
+        type: e.isDirectory() ? "directory" : "file",
+      }))
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    res.json(items);
+  } catch (err) {
+    if (err.code === "ENOENT") return res.status(404).json({ error: "Directory not found" });
+    res.status(500).json({ error: err.message || "Failed to list directory" });
+  }
+});
+
+app.get("/api/agents/:id/file", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const relativePath = req.query.path;
+  if (!relativePath) return res.status(400).json({ error: "path query parameter is required" });
+
+  const resolved = resolveAgentPath(agent, relativePath);
+  if (!resolved) return res.status(400).json({ error: "Invalid path" });
+
+  try {
+    const stat = await fs.promises.stat(resolved);
+    if (stat.isDirectory()) return res.status(400).json({ error: "Path is a directory" });
+    if (stat.size > MAX_FILE_SIZE) return res.status(413).json({ error: "File too large (max 2MB)" });
+
+    // Check for binary by extension
+    const ext = path.extname(resolved).slice(1).toLowerCase();
+    if (BINARY_EXTENSIONS.has(ext)) {
+      return res.json({ path: relativePath, binary: true, language: "plaintext" });
+    }
+
+    const content = await fs.promises.readFile(resolved, "utf-8");
+
+    // Check for binary content (null bytes in first 8KB)
+    const sample = content.slice(0, 8192);
+    if (sample.includes("\0")) {
+      return res.json({ path: relativePath, binary: true, language: "plaintext" });
+    }
+
+    res.json({ path: relativePath, content, language: detectLanguage(relativePath) });
+  } catch (err) {
+    if (err.code === "ENOENT") return res.status(404).json({ error: "File not found" });
+    res.status(500).json({ error: err.message || "Failed to read file" });
+  }
+});
+
+app.put("/api/agents/:id/file", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const { path: relativePath, content } = req.body;
+  if (!relativePath) return res.status(400).json({ error: "path is required" });
+  if (content === undefined || content === null) return res.status(400).json({ error: "content is required" });
+
+  const resolved = resolveAgentPath(agent, relativePath);
+  if (!resolved) return res.status(400).json({ error: "Invalid path" });
+
+  // Prevent writing inside .git directory
+  const relNormalized = path.relative(agent.workingDirectory, resolved);
+  if (relNormalized.startsWith(".git/") || relNormalized === ".git") {
+    return res.status(400).json({ error: "Cannot write to .git directory" });
+  }
+
+  try {
+    await fs.promises.writeFile(resolved, content, "utf-8");
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === "ENOENT") return res.status(404).json({ error: "File not found" });
+    res.status(500).json({ error: err.message || "Failed to write file" });
+  }
+});
+
 app.get("/api/agents/:id/branches", async (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });

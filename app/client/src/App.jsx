@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { flushSync } from "react-dom";
-import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2, Cpu, ChevronDown, Check, ArrowDown, Image as ImageIcon } from "lucide-react";
+import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, FileCode, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2, Cpu, ChevronDown, Check, ArrowDown, Image as ImageIcon } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
@@ -21,6 +21,7 @@ import { useNotifications } from "./hooks/useNotifications.js";
 import { useUsageStats } from "./hooks/useUsageStats.js";
 import StatusBar from "./components/StatusBar.jsx";
 import Terminal from "./components/Terminal.jsx";
+import CodeEditor from "./components/CodeEditor.jsx";
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(null); // null = loading
@@ -31,6 +32,7 @@ export default function App() {
   const [currentView, setCurrentView] = useState("chat"); // "chat" | "schedules"
   const [scheduleCount, setScheduleCount] = useState(0);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
   const [interactiveQuestions, setInteractiveQuestions] = useState({});
   const [agentModels, setAgentModels] = useState({});  // agentId -> model string
   const [pendingQuestions, setPendingQuestions] = useState({});
@@ -480,6 +482,8 @@ export default function App() {
     setCurrentView(view);
     if (view === "schedules") {
       setSelectedAgentId(null);
+      setEditorOpen(false);
+      setTerminalOpen(false);
     }
     setSidebarOpen(false);
   }
@@ -488,6 +492,8 @@ export default function App() {
     setSelectedAgentId(id);
     setCurrentView("chat");
     setSidebarOpen(false);
+    setEditorOpen(false);
+    setTerminalOpen(false);
     autoScrollRef.current = true;
     setShowScrollDown(false);
   }
@@ -809,15 +815,32 @@ export default function App() {
           </Button>
           <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} onCompact={selectedAgentId ? handleClearContext : null} className="flex-1 border-b-0" />
           {selectedAgentId && currentView === "chat" && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn("shrink-0 mr-2", terminalOpen && "text-primary")}
-              onClick={() => setTerminalOpen((v) => !v)}
-              title="Toggle Claude CLI"
-            >
-              <TerminalSquare className="h-5 w-5" />
-            </Button>
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn("shrink-0", editorOpen && "text-primary")}
+                onClick={() => {
+                  setEditorOpen((v) => !v);
+                  if (!editorOpen) setTerminalOpen(false);
+                }}
+                title="Toggle Code Editor"
+              >
+                <FileCode className="h-5 w-5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn("shrink-0 mr-2", terminalOpen && "text-primary")}
+                onClick={() => {
+                  setTerminalOpen((v) => !v);
+                  if (!terminalOpen) setEditorOpen(false);
+                }}
+                title="Toggle Claude CLI"
+              >
+                <TerminalSquare className="h-5 w-5" />
+              </Button>
+            </>
           )}
         </div>
         <ClaudeSetupBanner />
@@ -825,7 +848,7 @@ export default function App() {
           <TasksPage />
         ) : selectedAgentId ? (
           <>
-            {!terminalOpen && (
+            {!terminalOpen && !editorOpen && (
               <div className="flex flex-col min-h-0 flex-1 relative">
                 <ScrollArea ref={scrollAreaRef} className="flex-1 p-4">
                   {conversations[selectedAgentId]?.hasMore && (
@@ -1034,6 +1057,11 @@ export default function App() {
                 )}
                 <SuggestionBar suggestions={suggestions} options={options} actions={actions} onSelect={handleSend} onAction={handleSuggestionAction} />
                 <ChatInput onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} model={agentModels[selectedAgentId] || ""} onSetModel={handleSetModel} />
+              </div>
+            )}
+            {editorOpen && (
+              <div className="flex-1 min-h-0">
+                <CodeEditor agentId={selectedAgentId} visible={editorOpen} />
               </div>
             )}
             {terminalOpen && (
