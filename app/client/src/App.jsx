@@ -37,8 +37,8 @@ export default function App() {
   const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
   const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> [{ text }, ...] (FIFO queue)
   const terminalDataRef = useRef(null);
-  const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses, addWorktree, removeWorktree } = useAgents();
-  const { projects, directories, fetchDirectories } = useWorkspace();
+  const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses, removeWorktree } = useAgents();
+  const { projects, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
   const messagesEndRef = useRef(null);
@@ -774,7 +774,6 @@ export default function App() {
           onClone={async (repoFullName, provider) => { const a = await cloneRepo(repoFullName, provider); fetchDirectories(); return a; }}
           onDelete={handleDeleteAgent}
           onDeleteProject={handleDeleteProject}
-          onBranchChange={fetchGitStatus}
           onRefresh={async () => {
             await Promise.all([
               fetchDirectories(),
@@ -783,7 +782,6 @@ export default function App() {
             ]);
           }}
           projects={projects}
-          directories={directories}
           findAgentByWorkDir={findAgentByWorkDir}
           notificationsEnabled={notificationsEnabled}
           notificationsPermissionDenied={notificationsPermissionDenied}

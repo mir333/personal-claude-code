@@ -63,7 +63,6 @@ import {
   addWorktree,
   removeWorktree,
   getMainWorktreeDir,
-  sanitizeBranchName,
   buildWorktreePath,
 } from "./worktrees.js";
 
@@ -643,33 +642,36 @@ app.get("/api/workspace", async (req, res) => {
       .map((e) => ({ name: e.name, path: path.join(workspaceRoot, e.name) }));
 
     // Build structured response with worktree grouping
-    const worktreeSiblings = new Set(); // tracks dirs that are linked worktrees of another project
+    // Classify all dirs in parallel: check if repo, find main worktree dir
+    const dirInfo = await Promise.all(
+      allDirs.map(async (dir) => {
+        const topLevel = await gitExec(["rev-parse", "--show-toplevel"], dir.path);
+        const isRepo = topLevel !== null;
+        if (!isRepo) return { dir, isRepo: false, mainDir: null, wts: [] };
+        const mainDir = await getMainWorktreeDir(dir.path);
+        const isMainWorktree = !mainDir || mainDir === dir.path;
+        const wts = isMainWorktree ? await listWorktrees(dir.path) : [];
+        return { dir, isRepo: true, mainDir, isMainWorktree, wts };
+      })
+    );
+
+    const worktreeSiblings = new Set();
     const projects = [];
 
-    // First pass: identify main repos and their worktrees
-    for (const dir of allDirs) {
-      const topLevel = await gitExec(["rev-parse", "--show-toplevel"], dir.path);
-      const isRepo = topLevel !== null;
-      if (!isRepo) {
-        projects.push({ name: dir.name, path: dir.path, isRepo: false, worktrees: [] });
+    for (const info of dirInfo) {
+      if (!info.isRepo) {
+        projects.push({ name: info.dir.name, path: info.dir.path, isRepo: false, worktrees: [] });
         continue;
       }
-
-      // Check if this directory is a linked worktree of another project
-      const mainDir = await getMainWorktreeDir(dir.path);
-      if (mainDir && mainDir !== dir.path) {
-        // This is a linked worktree — will be grouped under its main project
-        worktreeSiblings.add(dir.path);
+      if (!info.isMainWorktree) {
+        worktreeSiblings.add(info.dir.path);
         continue;
       }
-
-      // This is a main worktree — list its worktrees
-      const wts = await listWorktrees(dir.path);
       projects.push({
-        name: dir.name,
-        path: dir.path,
+        name: info.dir.name,
+        path: info.dir.path,
         isRepo: true,
-        worktrees: wts.map((wt) => ({
+        worktrees: info.wts.map((wt) => ({
           branch: wt.branch,
           path: wt.path,
           isMain: wt.isMain,
@@ -678,10 +680,9 @@ app.get("/api/workspace", async (req, res) => {
     }
 
     // Second pass: add any orphaned worktree sibling dirs that weren't claimed
-    for (const dir of allDirs) {
-      if (worktreeSiblings.has(dir.path) && !projects.some((p) => p.worktrees.some((wt) => wt.path === dir.path))) {
-        // Orphaned worktree dir — show as standalone project
-        projects.push({ name: dir.name, path: dir.path, isRepo: true, worktrees: [] });
+    for (const info of dirInfo) {
+      if (worktreeSiblings.has(info.dir.path) && !projects.some((p) => p.worktrees.some((wt) => wt.path === info.dir.path))) {
+        projects.push({ name: info.dir.name, path: info.dir.path, isRepo: true, worktrees: [] });
       }
     }
 
@@ -925,8 +926,9 @@ app.post("/api/agents/:id/worktree", async (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
 
-  const { branch, createBranch } = req.body;
-  if (!branch || !branch.trim()) {
+  const { branch: rawBranch, createBranch } = req.body;
+  const branch = rawBranch?.trim();
+  if (!branch) {
     return res.status(400).json({ error: "branch is required" });
   }
 
@@ -938,19 +940,19 @@ app.post("/api/agents/:id/worktree", async (req, res) => {
 
   // Check if a worktree for this branch already exists
   const existing = await listWorktrees(mainDir);
-  if (existing.some((wt) => wt.branch === branch.trim())) {
+  if (existing.some((wt) => wt.branch === branch)) {
     return res.status(409).json({ error: `Worktree for branch "${branch}" already exists` });
   }
 
-  const targetPath = buildWorktreePath(mainDir, branch.trim());
-  const result = await addWorktree(mainDir, branch.trim(), targetPath, !!createBranch);
+  const targetPath = buildWorktreePath(mainDir, branch);
+  const result = await addWorktree(mainDir, branch, targetPath, !!createBranch);
   if (!result.ok) {
     return res.status(400).json({ error: result.error });
   }
 
   // Auto-create an agent for the new worktree
   const projectName = path.basename(mainDir);
-  const agentName = `${projectName} (${branch.trim()})`;
+  const agentName = `${projectName} (${branch})`;
   const profileId = agent.profileId;
   const newAgent = createAgent(agentName, targetPath, profileId);
 
@@ -963,7 +965,7 @@ app.post("/api/agents/:id/worktree", async (req, res) => {
       profileId: newAgent.profileId,
     },
     worktree: {
-      branch: branch.trim(),
+      branch,
       path: targetPath,
       isMain: false,
     },

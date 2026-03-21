@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronDown, ChevronRight, Search, LogOut, Clock, RefreshCw, AlertTriangle, X } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronRight, Search, LogOut, Clock, RefreshCw, AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,7 +16,7 @@ const STATUS_COLORS = {
 };
 
 const GIT_STATE = {
-  dirty: { color: "text-yellow-500", label: "Uncommitted changes", indicator: "*" },
+  dirty: { color: "text-yellow-500", label: "Uncommitted changes" },
   ahead: { color: "text-blue-500", label: "Unpushed commits" },
   clean: { color: "text-green-500", label: "Up to date" },
 };
@@ -198,7 +198,6 @@ function AddWorktreeDropdown({ agentId, onCreated, onClose }) {
 /* ------------------------------------------------------------------ */
 function ProjectItem({
   project,
-  agents,
   gitStatuses,
   selectedId,
   onSelect,
@@ -281,7 +280,6 @@ function ProjectItem({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            const mainAgent = findAgentByWorkDir(project.path);
             if (confirm(`Delete project "${project.name}"? This will permanently remove the directory, all worktrees, and their files.`)) {
               onDeleteProject(project.name, mainAgent?.id);
             }
@@ -628,10 +626,8 @@ export default function Sidebar({
   onClone,
   onDelete,
   onDeleteProject,
-  onBranchChange,
   onRefresh,
   projects = [],
-  directories,
   findAgentByWorkDir,
   notificationsEnabled,
   notificationsPermissionDenied,
@@ -834,7 +830,6 @@ export default function Sidebar({
             <ProjectItem
               key={project.path}
               project={project}
-              agents={agents}
               gitStatuses={gitStatuses}
               selectedId={selectedId}
               onSelect={onSelect}
