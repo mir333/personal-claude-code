@@ -165,6 +165,7 @@ export async function sendMessage(id, text, attachments = null) {
   agent.textBuffer = "";
 
   function emit(event) {
+    if (!event) return;
     const eventWithIndex = { ...event, eventIndex: ++agent.eventIndex };
     agent.eventBuffer.push({ index: agent.eventIndex, event: eventWithIndex });
     // Keep buffer bounded to avoid memory leak
@@ -177,6 +178,9 @@ export async function sendMessage(id, text, attachments = null) {
       }
     }
   }
+
+  // Notify listeners immediately that the agent is busy
+  emit({ type: "agent_status", status: "busy" });
 
   // Persist user message (store attachment metadata only, no binary data)
   const storageEntry = { type: "user", text };
@@ -412,6 +416,13 @@ export async function sendMessage(id, text, attachments = null) {
       emit({ type: "error", message: err.message });
       return;
     }
+    // AbortError: agent was stopped by user — flush any buffered text and emit done
+    if (agent.textBuffer) {
+      appendEntry(agent.workingDirectory, { type: "assistant_stream", text: agent.textBuffer });
+      agent.textBuffer = "";
+    }
+    appendEntry(agent.workingDirectory, { type: "stats", cost: null, usage: null, modelUsage: null, numTurns: 0, durationMs: 0 });
+    emit({ type: "done", result: "", cost: null, usage: null, modelUsage: null, numTurns: 0, durationMs: 0 });
   } finally {
     agent.abortController = null;
     agent.pendingQuestion = null;

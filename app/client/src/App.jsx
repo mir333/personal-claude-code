@@ -568,6 +568,11 @@ export default function App() {
     // Store attachment metadata (no binary data) for display in conversation
     const displayAttachments = attachments?.map((a) => ({ name: a.name, type: a.type, mediaType: a.mediaType })) || undefined;
 
+    // Optimistically set agent to busy so the stop button appears immediately
+    if (!isBusy) {
+      updateAgentStatus(selectedAgentId, "busy");
+    }
+
     if (isBusy) {
       // Append to the queue — multiple pending messages allowed
       setConversations((prev) => {
