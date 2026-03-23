@@ -57,6 +57,7 @@ import {
   parseRemoteUrl,
   fetchPrInfo,
   buildCloneUrl,
+  updateRemoteUrls,
 } from "./providers.js";
 import {
   listWorktrees,
@@ -1307,27 +1308,52 @@ app.post("/api/git-config", async (req, res) => {
 
   // Update provider tokens
   const providers = readProviders(profileId);
+  const changedProviders = [];
 
   // Backward compat: `token` maps to GitHub
   const ghToken = githubToken || token;
   if (ghToken && ghToken.trim()) {
+    if (providers.github?.token !== ghToken.trim()) {
+      changedProviders.push("github");
+    }
     providers.github = { ...providers.github, token: ghToken.trim() };
   }
   if (gitlabToken && gitlabToken.trim()) {
+    if (providers.gitlab?.token !== gitlabToken.trim()) {
+      changedProviders.push("gitlab");
+    }
     providers.gitlab = { ...providers.gitlab, token: gitlabToken.trim() };
   }
   if (gitlabUrl !== undefined) {
-    providers.gitlab = { ...providers.gitlab, url: gitlabUrl.trim() || "https://gitlab.com" };
+    const newGitlabUrl = gitlabUrl.trim() || "https://gitlab.com";
+    if (providers.gitlab?.url !== newGitlabUrl && !changedProviders.includes("gitlab")) {
+      changedProviders.push("gitlab");
+    }
+    providers.gitlab = { ...providers.gitlab, url: newGitlabUrl };
   }
   if (azuredevopsToken && azuredevopsToken.trim()) {
+    if (providers.azuredevops?.token !== azuredevopsToken.trim()) {
+      changedProviders.push("azuredevops");
+    }
     providers.azuredevops = { ...providers.azuredevops, token: azuredevopsToken.trim() };
   }
   if (azuredevopsOrg !== undefined) {
-    providers.azuredevops = { ...providers.azuredevops, organization: azuredevopsOrg.trim() };
+    const newOrg = azuredevopsOrg.trim();
+    if (providers.azuredevops?.organization !== newOrg && !changedProviders.includes("azuredevops")) {
+      changedProviders.push("azuredevops");
+    }
+    providers.azuredevops = { ...providers.azuredevops, organization: newOrg };
   }
 
   writeProviders(providers, profileId);
   syncGitCredentials(profileId);
+
+  // Update remote URLs in existing workspace repos (fire-and-forget)
+  if (changedProviders.length > 0) {
+    updateRemoteUrls(profileId, changedProviders).catch((err) => {
+      console.error("[git-config] Failed to update remote URLs:", err.message);
+    });
+  }
 
   // Return updated state
   const [updatedName, updatedEmail] = await Promise.all([

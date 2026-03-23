@@ -215,3 +215,93 @@ export function buildCloneUrl(provider, repoFullName, profileId) {
   }
   throw new Error(`Unknown provider: ${provider}`);
 }
+
+/**
+ * Update remote origin URLs in all workspace repos after a token change.
+ * Scans the workspace root for git repos, parses each remote URL to detect
+ * the provider, and if it matches a changed provider, rebuilds the URL with
+ * the current token via buildCloneUrl().
+ *
+ * Linked worktrees are skipped because they share the main repo's remote config.
+ * This function is best-effort: errors for individual repos are silently ignored.
+ *
+ * @param {string|null} profileId - The profile ID (or null for legacy mode)
+ * @param {string[]} changedProviders - Provider names that changed, e.g. ["github"]
+ */
+export async function updateRemoteUrls(profileId, changedProviders) {
+  if (!changedProviders || changedProviders.length === 0) return;
+
+  let workspaceRoot;
+  if (profileId) {
+    const paths = getProfilePaths(profileId);
+    if (!paths) return;
+    workspaceRoot = paths.workspaceRoot;
+  } else {
+    workspaceRoot = "/workspace";
+  }
+
+  let entries;
+  try {
+    entries = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const dirs = entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+    .map((e) => path.join(workspaceRoot, e.name));
+
+  const changedSet = new Set(changedProviders);
+
+  await Promise.all(
+    dirs.map(async (dir) => {
+      try {
+        // Skip linked worktrees (they have .git as a file, not a directory).
+        // Inlined here to avoid circular import from worktrees.js.
+        const gitPath = path.join(dir, ".git");
+        let stat;
+        try {
+          stat = await fs.promises.stat(gitPath);
+        } catch {
+          return; // no .git entry, not a git repo
+        }
+        if (stat.isFile()) return; // linked worktree
+
+        // Get current remote origin URL
+        const remoteUrl = await gitExec(["remote", "get-url", "origin"], dir);
+        if (!remoteUrl) return;
+
+        // Only update HTTPS remotes (SSH remotes don't embed tokens)
+        if (!remoteUrl.startsWith("https://")) return;
+
+        // Detect provider from URL
+        const remote = parseRemoteUrl(remoteUrl, profileId);
+        if (!remote || !changedSet.has(remote.provider)) return;
+
+        // Ensure the provider has a token before rebuilding URL
+        const token = getProviderToken(remote.provider, profileId);
+        if (!token) return;
+
+        // Build repoFullName from parsed remote info
+        let repoFullName;
+        if (remote.provider === "github") {
+          repoFullName = `${remote.owner}/${remote.repo}`;
+        } else if (remote.provider === "gitlab") {
+          repoFullName = `${remote.owner}/${remote.repo}`;
+        } else if (remote.provider === "azuredevops") {
+          repoFullName = `${remote.project}/${remote.repo}`;
+        } else {
+          return;
+        }
+
+        // Build new URL with the updated token
+        const newUrl = buildCloneUrl(remote.provider, repoFullName, profileId);
+
+        // Update the remote (local-only operation, fast)
+        await gitExec(["remote", "set-url", "origin", newUrl], dir);
+      } catch {
+        // Best effort: silently skip repos that fail
+      }
+    })
+  );
+}
