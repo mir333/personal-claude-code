@@ -289,26 +289,34 @@ export default function App() {
 
   const { activeSuggestions, activeActions } = useMemo(() => {
     const conv = selectedConversation;
-    if (conv.length === 0 || allSuggestions.length === 0) {
+    if (allSuggestions.length === 0) {
       return { activeSuggestions: [], activeActions: [] };
     }
-
-    const lastEntry = conv[conv.length - 1];
 
     // Derive active context tags based on conversation state
     const activeContextTags = new Set();
 
-    if (lastEntry.type === "stats") {
-      activeContextTags.add("after_completion");
-      activeContextTags.add("git");
-    } else if (lastEntry.type === "error") {
-      activeContextTags.add("after_error");
-      activeContextTags.add("recovery");
-    } else if (lastEntry.type === "context_cleared") {
-      activeContextTags.add("after_context_cleared");
-      activeContextTags.add("fresh_start");
+    if (conv.length === 0) {
+      // No conversation yet — agent is idle
+      activeContextTags.add("idle");
     } else {
-      return { activeSuggestions: [], activeActions: [] };
+      const lastEntry = conv[conv.length - 1];
+
+      if (lastEntry.type === "stats") {
+        activeContextTags.add("after_completion");
+        activeContextTags.add("git");
+        activeContextTags.add("idle");
+      } else if (lastEntry.type === "error") {
+        activeContextTags.add("after_error");
+        activeContextTags.add("recovery");
+        activeContextTags.add("idle");
+      } else if (lastEntry.type === "context_cleared") {
+        activeContextTags.add("after_context_cleared");
+        activeContextTags.add("fresh_start");
+        activeContextTags.add("idle");
+      } else {
+        return { activeSuggestions: [], activeActions: [] };
+      }
     }
 
     // Conditional context tags

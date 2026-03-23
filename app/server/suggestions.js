@@ -17,6 +17,7 @@ const suggestionsCache = new Map(); // profileId -> suggestion[]
 
 // --- Known context tags ---
 export const KNOWN_CONTEXT_TAGS = [
+  "idle",
   "after_completion",
   "after_error",
   "after_context_cleared",
@@ -126,6 +127,30 @@ const DEFAULT_SUGGESTIONS = [
     actionValue: "Start fresh",
     contextTags: ["after_context_cleared", "fresh_start"],
     order: 10,
+  },
+  {
+    name: "Git Status",
+    description: "Check the current git status of the repository",
+    actionType: "prompt",
+    actionValue: "Git Status",
+    contextTags: ["idle", "git"],
+    order: 10,
+  },
+  {
+    name: "Review code",
+    description: "Review the current codebase for issues and improvements",
+    actionType: "prompt",
+    actionValue: "Review the code and suggest improvements",
+    contextTags: ["idle"],
+    order: 20,
+  },
+  {
+    name: "Run tests",
+    description: "Run the project's test suite",
+    actionType: "prompt",
+    actionValue: "Run tests",
+    contextTags: ["idle"],
+    order: 30,
   },
 ];
 
