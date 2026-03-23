@@ -183,7 +183,7 @@ export async function sendMessage(id, text, attachments = null) {
   emit({ type: "agent_status", status: "busy" });
 
   // Persist user message (store attachment metadata only, no binary data)
-  const storageEntry = { type: "user", text };
+  const storageEntry = { type: "user", text, timestamp: Date.now() };
   if (attachments && attachments.length > 0) {
     storageEntry.attachments = attachments.map((a) => ({ name: a.name, type: a.type, mediaType: a.mediaType }));
   }

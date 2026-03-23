@@ -113,7 +113,7 @@ export default function App() {
           const entries = data.entries.map((m) => {
             if (!promoted && m.type === "pending_user") {
               promoted = true;
-              return { type: "user", text: m.text };
+              return { type: "user", text: m.text, timestamp: m.timestamp || Date.now() };
             }
             return m;
           });
@@ -582,7 +582,7 @@ export default function App() {
     } else {
       setConversations((prev) => {
         const data = prev[selectedAgentId] || { entries: [], total: 0, hasMore: false };
-        return { ...prev, [selectedAgentId]: { ...data, entries: [...data.entries, { type: "user", text, attachments: displayAttachments }], total: data.total + 1 } };
+        return { ...prev, [selectedAgentId]: { ...data, entries: [...data.entries, { type: "user", text, attachments: displayAttachments, timestamp: Date.now() }], total: data.total + 1 } };
       });
     }
 
@@ -1024,6 +1024,11 @@ export default function App() {
                               {displayText && (
                                 <div className="bg-secondary text-secondary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
                                   <Markdown>{displayText}</Markdown>
+                                </div>
+                              )}
+                              {msg.timestamp && (
+                                <div className="text-[10px] text-muted-foreground/60 text-right mr-1">
+                                  {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                 </div>
                               )}
                             </div>
