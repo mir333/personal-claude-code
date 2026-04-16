@@ -476,18 +476,24 @@ app.post("/api/v1/chat/completions", async (req, res) => {
       }
     };
 
+    // Subscribe BEFORE kicking off sendMessage so we cannot miss early events
     subscribeAgent(agent.id, listener);
 
-    // If the client disconnects, abort the agent run
-    req.on("close", () => {
-      if (!finished) {
-        try {
-          abortAgent(agent.id);
-        } catch (err) {
-          console.error(`[api] abortAgent(${agent.id}) on client disconnect failed:`, err.message);
-        }
+    // Only abort when the client really disconnected mid-stream. `res.on('close')`
+    // with a `writableEnded` guard avoids a race where Node emits `close` on the
+    // request *after* we cleanly end the response, which previously aborted the
+    // (already-finished) agent and surfaced as "Claude Code process aborted by user".
+    let aborted = false;
+    const onClientDisconnect = () => {
+      if (finished || res.writableEnded || aborted) return;
+      aborted = true;
+      try {
+        abortAgent(agent.id);
+      } catch (err) {
+        console.error(`[api] abortAgent(${agent.id}) on client disconnect failed:`, err.message);
       }
-    });
+    };
+    res.on("close", onClientDisconnect);
 
     try {
       await sendMessage(agent.id, userText.trim(), null);
@@ -495,8 +501,24 @@ app.post("/api/v1/chat/completions", async (req, res) => {
       console.error(`[api] Agent ${agent.id} streaming sendMessage failed:`, err);
       errorEvent = { message: err.message || "Agent error" };
     } finally {
-      unsubscribeAgent(agent.id, listener);
       finished = true;
+      unsubscribeAgent(agent.id, listener);
+      res.off("close", onClientDisconnect);
+    }
+
+    // Some models return their entire reply as a single final `result` instead of
+    // incremental text_deltas (happens reliably for very short prompts like "hi").
+    // If nothing was streamed incrementally, emit the full result as one content
+    // chunk so the client doesn't see an empty response.
+    if (!errorEvent && !accumulatedText && finishEvent && typeof finishEvent.result === "string" && finishEvent.result.length > 0) {
+      sseWrite({
+        id: completionId,
+        object: "chat.completion.chunk",
+        created,
+        model: modelId,
+        choices: [{ index: 0, delta: { content: finishEvent.result }, finish_reason: null }],
+      });
+      accumulatedText = finishEvent.result;
     }
 
     // Final chunk with finish_reason
@@ -518,8 +540,10 @@ app.post("/api/v1/chat/completions", async (req, res) => {
         choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
       });
     }
-    res.write("data: [DONE]\n\n");
-    res.end();
+    if (!res.writableEnded) {
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }
     return;
   }
 
@@ -534,19 +558,22 @@ app.post("/api/v1/chat/completions", async (req, res) => {
     }
   };
   subscribeAgent(agent.id, listener);
-  req.on("close", () => {
-    if (!finished) {
-      try { abortAgent(agent.id); } catch {}
-    }
-  });
+  let abortedNonStream = false;
+  const onClientDisconnectNonStream = () => {
+    if (finished || res.writableEnded || abortedNonStream) return;
+    abortedNonStream = true;
+    try { abortAgent(agent.id); } catch {}
+  };
+  res.on("close", onClientDisconnectNonStream);
   try {
     await sendMessage(agent.id, userText.trim(), null);
   } catch (err) {
     console.error(`[api] Agent ${agent.id} non-streaming sendMessage failed:`, err);
     errorEvent = { message: err.message || "Agent error" };
   } finally {
-    unsubscribeAgent(agent.id, listener);
     finished = true;
+    unsubscribeAgent(agent.id, listener);
+    res.off("close", onClientDisconnectNonStream);
   }
 
   if (errorEvent) {
