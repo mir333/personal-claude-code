@@ -642,18 +642,20 @@ function ProviderAccountsTab({ providerKey, allAccounts, onAccountsUpdated }) {
 /**
  * API Tokens tab — lets the user create/revoke bearer tokens that authenticate
  * against the Vercel AI SDK compatible endpoint. Each token is bound to a
- * specific agent.
+ * workspace directory. An ephemeral agent is spun up on the fly per unique
+ * conversation (keyed by message-prefix hash), mirroring how Tasks work.
  */
-function ApiTokensTab({ agents }) {
+function ApiTokensTab() {
   const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
   const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
 
   const [tokens, setTokens] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [workspaces, setWorkspaces] = useState([]); // [{ name, path, isWorktree }]
   const [label, setLabel] = useState("");
-  const [agentId, setAgentId] = useState("");
+  const [workingDirectory, setWorkingDirectory] = useState("");
   const [creating, setCreating] = useState(false);
-  const [newToken, setNewToken] = useState(null); // { token, label, agentId }
+  const [newToken, setNewToken] = useState(null); // { token, label, workingDirectory }
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(null);
 
@@ -670,6 +672,26 @@ function ApiTokensTab({ agents }) {
 
   useEffect(() => {
     reload();
+    // Load selectable workspaces (projects + non-main worktrees).
+    fetch("/api/workspace")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((projects) => {
+        const flat = [];
+        for (const p of (projects || [])) {
+          flat.push({ name: p.name, path: p.path, isWorktree: false });
+          for (const wt of (p.worktrees || [])) {
+            if (!wt.isMain) {
+              flat.push({
+                name: `${p.name} (${wt.branch || "worktree"})`,
+                path: wt.path,
+                isWorktree: true,
+              });
+            }
+          }
+        }
+        setWorkspaces(flat);
+      })
+      .catch(() => setWorkspaces([]));
   }, []);
 
   async function handleCreate() {
@@ -678,8 +700,8 @@ function ApiTokensTab({ agents }) {
       setError("Label is required");
       return;
     }
-    if (!agentId) {
-      setError("Pick an agent to bind this token to");
+    if (!workingDirectory) {
+      setError("Pick a workspace to bind this token to");
       return;
     }
     setCreating(true);
@@ -687,16 +709,16 @@ function ApiTokensTab({ agents }) {
       const res = await fetch("/api/api-tokens", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label: label.trim(), agentId }),
+        body: JSON.stringify({ label: label.trim(), workingDirectory }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Failed to create token");
         return;
       }
-      setNewToken({ token: data.token, label: data.label, agentId: data.agentId });
+      setNewToken({ token: data.token, label: data.label, workingDirectory: data.workingDirectory });
       setLabel("");
-      setAgentId("");
+      setWorkingDirectory("");
       reload();
     } catch (err) {
       setError(err.message || "Failed to create token");
@@ -725,9 +747,15 @@ function ApiTokensTab({ agents }) {
     }
   }
 
-  function agentLabel(id) {
-    const a = (agents || []).find((x) => x.id === id);
-    return a ? a.name : "(unknown agent)";
+  function basename(p) {
+    if (!p || typeof p !== "string") return "";
+    return p.split("/").filter(Boolean).pop() || p;
+  }
+
+  function workspaceLabel(p) {
+    if (!p) return "(no workspace)";
+    const match = workspaces.find((w) => w.path === p);
+    return match ? match.name : basename(p);
   }
 
   const baseUrl = typeof window !== "undefined" ? `${window.location.origin}/api/v1` : "/api/v1";
@@ -736,8 +764,9 @@ function ApiTokensTab({ agents }) {
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground leading-relaxed">
         Generate bearer tokens to call this instance using the Vercel AI SDK
-        (OpenAI-compatible). Each token is bound to a specific agent — requests
-        run as that agent and reuse its conversation context.
+        (OpenAI-compatible). Each token is bound to a workspace directory.
+        A fresh Claude session is started per unique conversation and reused
+        for follow-ups in that conversation.
       </p>
 
       <div className="rounded-md border border-border p-2.5 text-[11px] text-muted-foreground font-mono bg-muted/30 break-all">
@@ -764,8 +793,11 @@ function ApiTokensTab({ agents }) {
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
             </button>
           </div>
+          <div className="text-[11px] text-muted-foreground" title={newToken.workingDirectory}>
+            Bound to workspace: <span className="text-foreground">{workspaceLabel(newToken.workingDirectory)}</span>
+          </div>
           <div className="text-[11px] text-muted-foreground">
-            Bound to agent: <span className="text-foreground">{agentLabel(newToken.agentId)}</span>
+            Model id: <code className="text-foreground">claude-agent-{basename(newToken.workingDirectory)}</code>
           </div>
           <button
             onClick={() => setNewToken(null)}
@@ -789,20 +821,20 @@ function ApiTokensTab({ agents }) {
           />
         </div>
         <div>
-          <label className="text-xs text-muted-foreground">Bind to agent</label>
+          <label className="text-xs text-muted-foreground">Bind to workspace</label>
           <select
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
+            value={workingDirectory}
+            onChange={(e) => setWorkingDirectory(e.target.value)}
             className={inputClass}
           >
-            <option value="">Select an agent…</option>
-            {(agents || []).map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
+            <option value="">Select a workspace…</option>
+            {workspaces.map((w) => (
+              <option key={w.path} value={w.path}>{w.name}</option>
             ))}
           </select>
           <p className={hintClass}>
-            Requests using this token will be processed by this agent, reusing its
-            conversation context.
+            Requests using this token run in this workspace. An agent is created
+            on the fly per unique conversation and reused for follow-ups.
           </p>
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
@@ -828,8 +860,8 @@ function ApiTokensTab({ agents }) {
             <div key={t.id} className="flex items-start justify-between gap-2 p-2 rounded-md border border-border">
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium truncate">{t.label}</div>
-                <div className="text-[11px] text-muted-foreground truncate">
-                  Agent: {agentLabel(t.agentId)}
+                <div className="text-[11px] text-muted-foreground truncate" title={t.workingDirectory || ""}>
+                  Workspace: {workspaceLabel(t.workingDirectory)}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
                   Created {new Date(t.createdAt).toLocaleDateString()}
@@ -908,7 +940,7 @@ function GitSettingsPanel({ onClose, agents }) {
           {activeTab === "github" && <ProviderAccountsTab providerKey="github" allAccounts={accounts} onAccountsUpdated={setAccounts} />}
           {activeTab === "gitlab" && <ProviderAccountsTab providerKey="gitlab" allAccounts={accounts} onAccountsUpdated={setAccounts} />}
           {activeTab === "azuredevops" && <ProviderAccountsTab providerKey="azuredevops" allAccounts={accounts} onAccountsUpdated={setAccounts} />}
-          {activeTab === "apitokens" && <ApiTokensTab agents={agents} />}
+          {activeTab === "apitokens" && <ApiTokensTab />}
         </>
       )}
     </div>

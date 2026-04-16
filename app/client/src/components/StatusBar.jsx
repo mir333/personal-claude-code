@@ -1,4 +1,4 @@
-import { Activity, Coins, ArrowDownToLine, ArrowUpFromLine, Database, CalendarDays, Gauge, AlertTriangle, Eraser } from "lucide-react";
+import { Activity, Coins, ArrowDownToLine, ArrowUpFromLine, Database, CalendarDays, Gauge, AlertTriangle, Eraser, Minimize2 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 
 function formatTokens(n) {
@@ -38,7 +38,7 @@ function ModelCosts({ modelCosts, prefix }) {
   ));
 }
 
-export default function StatusBar({ usage, connected, contextInfo, onCompact, className }) {
+export default function StatusBar({ usage, connected, contextInfo, onClearContext, onCompact, className }) {
   const { session, weekly } = usage;
   const pct = contextInfo ? Math.min(100, (contextInfo.used / contextInfo.contextWindow) * 100) : 0;
 
@@ -74,13 +74,24 @@ export default function StatusBar({ usage, connected, contextInfo, onCompact, cl
             </span>
           )}
 
+          {onClearContext && (
+            <button
+              onClick={onClearContext}
+              className="flex items-center gap-1 shrink-0 rounded px-1.5 py-0.5 text-xs font-medium bg-muted hover:bg-muted/80 text-foreground/70 hover:text-foreground transition-colors"
+              title="Clear context: discard the current session entirely (history preserved on disk)"
+            >
+              <Eraser className="h-3 w-3" />
+              Clear
+            </button>
+          )}
+
           {onCompact && (
             <button
               onClick={onCompact}
               className="flex items-center gap-1 shrink-0 rounded px-1.5 py-0.5 text-xs font-medium bg-muted hover:bg-muted/80 text-foreground/70 hover:text-foreground transition-colors"
-              title="Clear context to free up space"
+              title="Compact: ask Claude to summarize the conversation, preserving context at lower token cost"
             >
-              <Eraser className="h-3 w-3" />
+              <Minimize2 className="h-3 w-3" />
               Compact
             </button>
           )}

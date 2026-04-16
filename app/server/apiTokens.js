@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { getProfilePaths } from "./profiles.js";
 
 const PROFILES_DIR = "/home/node/.claude/profiles";
 const LEGACY_DIR = "/home/node/.claude/git";
@@ -20,7 +21,23 @@ function loadTokens(profileId) {
   try {
     const raw = fs.readFileSync(tokensPath(profileId), "utf-8");
     const data = JSON.parse(raw);
-    return Array.isArray(data.tokens) ? data.tokens : [];
+    const all = Array.isArray(data.tokens) ? data.tokens : [];
+    // Migration: drop legacy tokens that only have agentId and no workingDirectory.
+    // Rewrite the file once so subsequent reads are clean.
+    const valid = all.filter(
+      (t) => t && typeof t.workingDirectory === "string" && t.workingDirectory
+    );
+    if (valid.length !== all.length) {
+      try {
+        saveTokens(profileId, valid);
+        console.warn(
+          `[apiTokens] Invalidated ${all.length - valid.length} legacy token(s) for profile ${profileId || "(legacy)"}`
+        );
+      } catch (err) {
+        console.error("[apiTokens] failed to rewrite migrated tokens:", err.message);
+      }
+    }
+    return valid;
   } catch {
     return [];
   }
@@ -38,13 +55,39 @@ function hashToken(token) {
 }
 
 /**
+ * Validate that a working directory is acceptable for the given profile.
+ * Must be a subfolder of the profile's workspaceRoot. Returns the normalized path.
+ * Existence is NOT required at token-creation time (directory may be created later
+ * or may exist on a different mount); the /v1 endpoint re-checks at request time.
+ */
+export function validateWorkingDirectoryForProfile(profileId, workingDirectory) {
+  if (!workingDirectory || typeof workingDirectory !== "string") {
+    throw new Error("workingDirectory is required");
+  }
+  const normalized = path.normalize(workingDirectory).replace(/\/+$/, "");
+  let workspaceRoot = "/workspace";
+  if (profileId) {
+    try {
+      const paths = getProfilePaths(profileId);
+      if (paths && paths.workspaceRoot) workspaceRoot = paths.workspaceRoot;
+    } catch {
+      // fall through to default
+    }
+  }
+  if (normalized === workspaceRoot || !normalized.startsWith(workspaceRoot + "/")) {
+    throw new Error(`workingDirectory must be a subfolder of ${workspaceRoot}`);
+  }
+  return normalized;
+}
+
+/**
  * List all tokens for a profile. Does not expose the raw token value.
  */
 export function listApiTokens(profileId) {
-  return loadTokens(profileId).map(({ id, label, agentId, createdAt, lastUsedAt }) => ({
+  return loadTokens(profileId).map(({ id, label, workingDirectory, createdAt, lastUsedAt }) => ({
     id,
     label,
-    agentId: agentId || null,
+    workingDirectory: workingDirectory || null,
     createdAt,
     lastUsedAt: lastUsedAt || null,
   }));
@@ -52,11 +95,13 @@ export function listApiTokens(profileId) {
 
 /**
  * Create a new API token. Returns the raw token string ONCE. It cannot be retrieved again.
+ * Tokens are bound to a workspace directory, not a specific agent. An ephemeral
+ * agent is created on demand when the token is used.
  */
-export function createApiToken(profileId, { label, agentId }) {
+export function createApiToken(profileId, { label, workingDirectory }) {
   const trimmedLabel = (label || "").trim();
   if (!trimmedLabel) throw new Error("Label is required");
-  if (!agentId) throw new Error("agentId is required");
+  const normalizedWd = validateWorkingDirectoryForProfile(profileId, workingDirectory);
 
   const tokens = loadTokens(profileId);
 
@@ -67,7 +112,7 @@ export function createApiToken(profileId, { label, agentId }) {
   const entry = {
     id,
     label: trimmedLabel,
-    agentId,
+    workingDirectory: normalizedWd,
     tokenHash: hashToken(rawToken),
     createdAt: Date.now(),
     lastUsedAt: null,
@@ -79,7 +124,7 @@ export function createApiToken(profileId, { label, agentId }) {
   return {
     id,
     label: trimmedLabel,
-    agentId,
+    workingDirectory: normalizedWd,
     token: rawToken, // only returned on creation
     createdAt: entry.createdAt,
   };
@@ -100,7 +145,7 @@ export function deleteApiToken(profileId, tokenId) {
  * Resolve a raw bearer token to its entry. Searches across ALL profiles,
  * since API clients authenticate only by the token string.
  *
- * Returns { profileId, id, label, agentId } or null.
+ * Returns { profileId, id, label, workingDirectory } or null.
  * Also updates lastUsedAt.
  */
 export function resolveApiToken(rawToken) {
@@ -131,7 +176,7 @@ export function resolveApiToken(rawToken) {
         profileId,
         id: found.id,
         label: found.label,
-        agentId: found.agentId,
+        workingDirectory: found.workingDirectory,
       };
     }
   }

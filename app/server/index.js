@@ -76,6 +76,12 @@ import {
   deleteApiToken,
   resolveApiToken,
 } from "./apiTokens.js";
+import {
+  acquireSessionAgent,
+  hashMessagesPrefix,
+  touchSessionAgent,
+  evictByTokenId,
+} from "./sessionAgents.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -367,9 +373,9 @@ app.get("/api/v1/models", (req, res) => {
   const resolved = resolveApiToken(token);
   if (!resolved) return res.status(401).json({ error: { message: "Invalid token", type: "invalid_request_error" } });
 
-  // Report a single synthetic model that maps to the agent bound to this token.
-  const agent = getAgent(resolved.agentId);
-  const modelId = agent ? `claude-agent-${agent.name}` : "claude-agent";
+  // Report a single synthetic model named after the token's bound workspace.
+  const workspaceName = path.basename(resolved.workingDirectory || "") || "workspace";
+  const modelId = `claude-agent-${workspaceName}`;
   res.json({
     object: "list",
     data: [{ id: modelId, object: "model", created: Math.floor(Date.now() / 1000), owned_by: "personal-claude-code" }],
@@ -386,29 +392,45 @@ app.post("/api/v1/chat/completions", async (req, res) => {
     return res.status(401).json({ error: { message: "Invalid token", type: "invalid_request_error" } });
   }
 
-  const agent = getAgent(resolved.agentId);
-  if (!agent) {
-    return res.status(404).json({ error: { message: "Agent bound to this token no longer exists", type: "invalid_request_error" } });
-  }
-  // Token is profile-scoped — enforce that the agent belongs to the same profile
-  if (resolved.profileId && agent.profileId !== resolved.profileId) {
-    return res.status(403).json({ error: { message: "Token does not have access to this agent", type: "invalid_request_error" } });
-  }
-
   const { messages, stream } = req.body || {};
   const userText = extractLastUserMessage(messages);
   if (!userText || !userText.trim()) {
     return res.status(400).json({ error: { message: "messages must contain a user message with non-empty content", type: "invalid_request_error" } });
   }
 
-  if (agent.status === "busy") {
-    return res.status(409).json({ error: { message: "Agent is busy, try again later", type: "server_error" } });
+  // The token is bound to a workspace directory — verify it still exists before
+  // spinning up an agent (prevents confusing ENOENT crashes deep in the SDK).
+  if (!resolved.workingDirectory || !fs.existsSync(resolved.workingDirectory)) {
+    return res.status(410).json({
+      error: {
+        message: `Working directory no longer exists: ${resolved.workingDirectory}. Revoke and recreate this token.`,
+        type: "invalid_request_error",
+      },
+    });
   }
+
+  // Per-session ephemeral agent: hash the message prefix (everything except the
+  // new user turn) so follow-up requests in the same conversation reuse the
+  // same Claude SDK session, while unrelated conversations get their own agent.
+  const sessionHash = hashMessagesPrefix(messages);
+  const workspaceName = path.basename(resolved.workingDirectory) || "workspace";
+  const agent = acquireSessionAgent({
+    tokenId: resolved.id,
+    sessionHash,
+    workingDirectory: resolved.workingDirectory,
+    profileId: resolved.profileId,
+    agentName: `api-${workspaceName}-${sessionHash.slice(0, 8)}`,
+  });
+
+  if (agent.status === "busy") {
+    return res.status(409).json({ error: { message: "Session is already processing a request, retry shortly", type: "server_error" } });
+  }
+  touchSessionAgent(resolved.id, sessionHash);
 
   const shouldStream = stream !== false; // default true (AI SDK always streams)
   const completionId = "chatcmpl-" + crypto.randomUUID().replace(/-/g, "");
   const created = Math.floor(Date.now() / 1000);
-  const modelId = `claude-agent-${agent.name}`;
+  const modelId = `claude-agent-${workspaceName}`;
 
   // Collect streamed text from the agent via a listener
   let accumulatedText = "";
@@ -841,18 +863,13 @@ app.get("/api/api-tokens", (req, res) => {
 
 app.post("/api/api-tokens", (req, res) => {
   const profileId = req.profile?.id || null;
-  const { label, agentId } = req.body || {};
-  if (!label || !agentId) {
-    return res.status(400).json({ error: "label and agentId are required" });
-  }
-  // Validate that the agent exists and belongs to this profile
-  const agent = getAgent(agentId);
-  if (!agent) return res.status(404).json({ error: "Agent not found" });
-  if (agent.profileId !== profileId) {
-    return res.status(403).json({ error: "Agent does not belong to this profile" });
+  const { label, workingDirectory } = req.body || {};
+  if (!label || !workingDirectory) {
+    return res.status(400).json({ error: "label and workingDirectory are required" });
   }
   try {
-    const created = createApiToken(profileId, { label, agentId });
+    // createApiToken validates that workingDirectory is under the profile's workspaceRoot.
+    const created = createApiToken(profileId, { label, workingDirectory });
     res.status(201).json(created);
   } catch (err) {
     console.error("[api] POST /api/api-tokens failed:", err);
@@ -864,6 +881,10 @@ app.delete("/api/api-tokens/:id", (req, res) => {
   const profileId = req.profile?.id || null;
   const ok = deleteApiToken(profileId, req.params.id);
   if (!ok) return res.status(404).json({ error: "Token not found" });
+  // Kill any in-flight or cached session-agents for this token.
+  try { evictByTokenId(req.params.id); } catch (err) {
+    console.error("[api] evictByTokenId failed:", err.message);
+  }
   res.status(204).end();
 });
 
@@ -1059,6 +1080,21 @@ app.get("/api/usage", (req, res) => {
 app.post("/api/agents/:id/clear-context", (req, res) => {
   const ok = clearContext(req.params.id);
   if (!ok) return res.status(404).json({ error: "Agent not found" });
+  res.json({ ok: true });
+});
+
+// Trigger native SDK compaction by sending the `/compact` slash command to the
+// agent. Unlike clear-context (which wipes the session entirely), compaction
+// asks Claude to summarize the conversation history while keeping the session
+// alive — so prior context is preserved at a much lower token cost.
+app.post("/api/agents/:id/compact", (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+  if (agent.status === "busy") return res.status(409).json({ error: "Agent is busy" });
+  // Fire-and-forget: streaming events flow to subscribers via the normal path.
+  sendMessage(req.params.id, "/compact", null).catch((err) => {
+    console.error(`[api] Agent ${req.params.id} compact failed:`, err);
+  });
   res.json({ ok: true });
 });
 

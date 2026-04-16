@@ -700,6 +700,16 @@ export default function App() {
     } catch {}
   }
 
+  async function handleCompact() {
+    if (!selectedAgentId) return;
+    try {
+      // Triggers the SDK's native /compact slash command. Streaming events
+      // (compact_boundary, status, etc.) flow back via the normal WebSocket
+      // listener so no additional UI plumbing is needed here.
+      await fetch(`/api/agents/${selectedAgentId}/compact`, { method: "POST" });
+    } catch {}
+  }
+
   async function handleDeleteHistory() {
     if (!selectedAgentId) return;
     try {
@@ -973,7 +983,14 @@ export default function App() {
           >
             <Menu className="h-5 w-5" />
           </Button>
-          <StatusBar usage={usage} connected={connected} contextInfo={contextInfo} onCompact={selectedAgentId ? handleClearContext : null} className="flex-1 border-b-0" />
+          <StatusBar
+            usage={usage}
+            connected={connected}
+            contextInfo={contextInfo}
+            onClearContext={selectedAgentId ? handleClearContext : null}
+            onCompact={selectedAgentId ? handleCompact : null}
+            className="flex-1 border-b-0"
+          />
           {selectedAgentId && currentView === "chat" && (
             <>
               <Button
