@@ -20,7 +20,7 @@ export function createAgent(name, workingDirectory, profileId) {
     textBuffer: "",
     interactiveQuestions: true,
     pendingQuestion: null,
-    model: null,               // Model override (e.g. "claude-sonnet-4-5-20250929")
+    model: null,               // Model override (e.g. "claude-opus-4-7")
     listeners: new Set(),      // Set of callback functions
     eventBuffer: [],           // Array of { index, event } for reconnect backfill
     eventIndex: 0,             // Monotonically increasing event counter
