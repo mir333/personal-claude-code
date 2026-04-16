@@ -370,7 +370,14 @@ export async function sendMessage(id, text, attachments = null) {
         // Handle error subtypes
         if (message.subtype !== "success") {
           const errorMsg = message.errors ? message.errors.join("; ") : `Stopped: ${message.subtype}`;
-          emit({ type: "error", message: errorMsg });
+          console.error(`[agents] Agent ${agent.id} (${agent.name}) result error subtype=${message.subtype}:`, errorMsg);
+          emit({
+            type: "error",
+            message: errorMsg,
+            name: message.subtype || "Error",
+            details: message.errors || null,
+            timestamp: Date.now(),
+          });
         }
 
         agent.history.push({
@@ -411,9 +418,18 @@ export async function sendMessage(id, text, attachments = null) {
     }
   } catch (err) {
     if (err.name !== "AbortError") {
+      console.error(`[agents] Agent ${agent.id} (${agent.name}) error:`, err);
       agent.status = "error";
-      appendEntry(agent.workingDirectory, { type: "error", message: err.message });
-      emit({ type: "error", message: err.message });
+      const errorEntry = {
+        type: "error",
+        message: err.message,
+        name: err.name || "Error",
+        stack: err.stack || null,
+        code: err.code || null,
+        timestamp: Date.now(),
+      };
+      appendEntry(agent.workingDirectory, errorEntry);
+      emit(errorEntry);
       return;
     }
     // AbortError: agent was stopped by user — flush any buffered text and emit done

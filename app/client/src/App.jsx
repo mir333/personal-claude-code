@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, FileCode, MessageCircleQuestion, Paperclip, WifiOff, Copy, CopyCheck, Clock, FileText, X, Loader2, Cpu, ChevronDown, Check, ArrowDown, Image as ImageIcon } from "lucide-react";
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
+import ErrorCard from "./components/ErrorCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
 import Markdown from "./components/Markdown.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
@@ -182,7 +183,16 @@ export default function App() {
       } else if (type === "error") {
         setConversations((prev) => {
           const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
-          return { ...prev, [agentId]: { ...data, entries: [...data.entries, { type: "error", message: rest.message }], total: data.total + 1 } };
+          const errorEntry = {
+            type: "error",
+            message: rest.message,
+            name: rest.name || null,
+            stack: rest.stack || null,
+            code: rest.code || null,
+            details: rest.details || null,
+            timestamp: rest.timestamp || Date.now(),
+          };
+          return { ...prev, [agentId]: { ...data, entries: [...data.entries, errorEntry], total: data.total + 1 } };
         });
         updateAgentStatus(agentId, "error");
         setPendingQuestions((prev) => { const next = { ...prev }; delete next[agentId]; return next; });
@@ -1191,11 +1201,7 @@ export default function App() {
                             </div>
                           );
                         })()}
-                        {msg.type === "error" && (
-                          <div className="max-w-full md:max-w-3/4 bg-destructive/20 text-destructive rounded-lg px-4 py-2">
-                            {msg.message}
-                          </div>
-                        )}
+                        {msg.type === "error" && <ErrorCard error={msg} />}
                       </div>
                     );
                   })}

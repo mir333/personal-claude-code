@@ -18,8 +18,9 @@ function ensureGitignore(workDir) {
     } else {
       writeFileSync(gitignorePath, STORAGE_DIR + "\n");
     }
-  } catch {
-    // non-critical, ignore
+  } catch (err) {
+    // non-critical, ignore but log so it's visible in docker logs
+    console.error(`[storage] Failed to update .gitignore in ${workDir}:`, err.message);
   }
 }
 
@@ -31,7 +32,11 @@ export function loadConversation(workDir) {
   try {
     const data = readFileSync(storagePath(workDir), "utf-8");
     return JSON.parse(data);
-  } catch {
+  } catch (err) {
+    // ENOENT is expected for first run; only log unexpected errors so they surface in docker logs
+    if (err && err.code !== "ENOENT") {
+      console.error(`[storage] Failed to load conversation for ${workDir}:`, err.message);
+    }
     return [];
   }
 }

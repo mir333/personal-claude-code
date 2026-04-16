@@ -82,6 +82,24 @@ const app = express();
 const server = createServer(app);
 const bootId = crypto.randomUUID();
 
+// --- Global process-level error handlers ---
+// Ensure any uncaught errors or unhandled promise rejections are visible in
+// the container's stdout/stderr (and thus in `docker logs`) instead of being
+// silently swallowed.
+process.on("uncaughtException", (err, origin) => {
+  console.error(`[process] Uncaught exception (origin=${origin}):`, err);
+});
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[process] Unhandled promise rejection:", reason);
+  if (reason && reason.stack) {
+    console.error(reason.stack);
+  }
+});
+process.on("warning", (warning) => {
+  console.warn(`[process] Node warning: ${warning.name}: ${warning.message}`);
+  if (warning.stack) console.warn(warning.stack);
+});
+
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD;
 const BASE_URL_PROTOCOL = process.env.BASE_URL_PROTOCOL || "https";
 
@@ -135,8 +153,9 @@ app.get("/api/claude-status", (_req, res) => {
         authMethod = "oauth";
       }
     }
-  } catch {
-    // ignore parse errors
+  } catch (err) {
+    // Typically parse errors - log so they surface in docker logs
+    console.error(`[api] /api/claude-status failed to parse credentials at ${credsPath}:`, err.message);
   }
 
   // Also check for API key in environment
@@ -169,6 +188,7 @@ app.post("/api/profiles", (req, res) => {
     req.session.profileSlug = profile.slug;
     res.status(201).json({ profile });
   } catch (err) {
+    console.error("[api] POST /api/profiles failed:", err);
     res.status(400).json({ error: err.message });
   }
 });
@@ -439,13 +459,18 @@ app.post("/api/v1/chat/completions", async (req, res) => {
     // If the client disconnects, abort the agent run
     req.on("close", () => {
       if (!finished) {
-        try { abortAgent(agent.id); } catch {}
+        try {
+          abortAgent(agent.id);
+        } catch (err) {
+          console.error(`[api] abortAgent(${agent.id}) on client disconnect failed:`, err.message);
+        }
       }
     });
 
     try {
       await sendMessage(agent.id, userText.trim(), null);
     } catch (err) {
+      console.error(`[api] Agent ${agent.id} streaming sendMessage failed:`, err);
       errorEvent = { message: err.message || "Agent error" };
     } finally {
       unsubscribeAgent(agent.id, listener);
@@ -495,6 +520,7 @@ app.post("/api/v1/chat/completions", async (req, res) => {
   try {
     await sendMessage(agent.id, userText.trim(), null);
   } catch (err) {
+    console.error(`[api] Agent ${agent.id} non-streaming sendMessage failed:`, err);
     errorEvent = { message: err.message || "Agent error" };
   } finally {
     unsubscribeAgent(agent.id, listener);
@@ -559,8 +585,9 @@ try {
       writeProviders([{ id: crypto.randomUUID(), label: "Default", token: match[1], type: "github" }], null);
     }
   }
-} catch {
-  // ignore migration errors
+} catch (err) {
+  // ignore migration errors but log them for visibility in docker logs
+  console.error("[api] Provider token migration error:", err);
 }
 
 function slugify(name) {
@@ -669,7 +696,10 @@ app.post("/api/agents", async (req, res) => {
     const agent = createAgent(name, projectDir, profileId);
     res.status(201).json(agent);
   } catch (err) {
-    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch {}
+    console.error("[api] POST /api/agents (create project) failed:", err);
+    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch (rmErr) {
+      console.error("[api] Cleanup after failed project create also failed:", rmErr);
+    }
     res.status(500).json({ error: err.message || "Failed to create project" });
   }
 });
@@ -724,6 +754,7 @@ app.get("/api/repos/:provider", async (req, res) => {
 
     res.status(400).json({ error: `Unknown provider: ${provider}` });
   } catch (err) {
+    console.error(`[api] GET /api/repos/${provider} failed:`, err);
     res.status(500).json({ error: err.message || "Failed to fetch repos" });
   }
 });
@@ -741,6 +772,7 @@ app.get("/api/github/repos", async (req, res) => {
       description: r.description || "", updated_at: r.updated_at, owner: r.owner.login,
     })));
   } catch (err) {
+    console.error("[api] GET /api/github/repos failed:", err);
     res.status(500).json({ error: err.message || "Failed to fetch repos" });
   }
 });
@@ -793,7 +825,10 @@ app.post("/api/agents/clone", async (req, res) => {
     const agent = createAgent(repoName, projectDir, profileId);
     res.status(201).json(agent);
   } catch (err) {
-    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch {}
+    console.error(`[api] POST /api/agents/clone (${repoFullName}) failed:`, err);
+    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch (rmErr) {
+      console.error("[api] Cleanup after failed clone also failed:", rmErr);
+    }
     res.status(500).json({ error: err.message || "Failed to clone repository" });
   }
 });
@@ -820,6 +855,7 @@ app.post("/api/api-tokens", (req, res) => {
     const created = createApiToken(profileId, { label, agentId });
     res.status(201).json(created);
   } catch (err) {
+    console.error("[api] POST /api/api-tokens failed:", err);
     res.status(400).json({ error: err.message || "Failed to create token" });
   }
 });
@@ -884,8 +920,9 @@ app.delete("/api/workspace/:name", async (req, res) => {
         }
       }
     }
-  } catch {
+  } catch (err) {
     // non-critical, continue with deletion
+    console.error(`[api] DELETE /api/workspace/${dirName} - worktree cleanup failed (continuing):`, err);
   }
 
   // Delete any agent associated with this directory
@@ -899,6 +936,7 @@ app.delete("/api/workspace/:name", async (req, res) => {
     fs.rmSync(dirPath, { recursive: true, force: true });
     res.json({ ok: true });
   } catch (err) {
+    console.error(`[api] DELETE /api/workspace/${dirName} failed:`, err);
     res.status(500).json({ error: err.message || "Failed to delete directory" });
   }
 });
@@ -1007,7 +1045,8 @@ app.get("/api/workspace", async (req, res) => {
     }
 
     res.json(projects);
-  } catch {
+  } catch (err) {
+    console.error("[api] GET /api/workspace (list projects) failed:", err);
     res.json([]);
   }
 });
@@ -1105,6 +1144,7 @@ app.post("/api/agents/:id/pr-review", async (req, res) => {
 
     res.status(400).json({ error: `Unsupported provider: ${prInfo.provider}` });
   } catch (err) {
+    console.error("[api] POST PR review failed:", err);
     res.status(500).json({ error: err.message || "Failed to post review" });
   }
 });
@@ -1145,7 +1185,9 @@ app.get("/api/agents/:id/git-status", async (req, res) => {
       if (remote) {
         try {
           pr = await fetchPrInfo(remote, branch, profileId);
-        } catch {}
+        } catch (err) {
+          console.error(`[api] fetchPrInfo for branch "${branch}" failed:`, err.message);
+        }
       }
     }
   }
@@ -1221,6 +1263,7 @@ app.get("/api/agents/:id/files", async (req, res) => {
     res.json(items);
   } catch (err) {
     if (err.code === "ENOENT") return res.status(404).json({ error: "Directory not found" });
+    console.error(`[api] GET /api/agents/${req.params.id}/files failed:`, err);
     res.status(500).json({ error: err.message || "Failed to list directory" });
   }
 });
@@ -1257,6 +1300,7 @@ app.get("/api/agents/:id/file", async (req, res) => {
     res.json({ path: relativePath, content, language: detectLanguage(relativePath) });
   } catch (err) {
     if (err.code === "ENOENT") return res.status(404).json({ error: "File not found" });
+    console.error(`[api] GET /api/agents/${req.params.id}/file failed:`, err);
     res.status(500).json({ error: err.message || "Failed to read file" });
   }
 });
@@ -1283,6 +1327,7 @@ app.put("/api/agents/:id/file", async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     if (err.code === "ENOENT") return res.status(404).json({ error: "File not found" });
+    console.error(`[api] PUT /api/agents/${req.params.id}/file failed:`, err);
     res.status(500).json({ error: err.message || "Failed to write file" });
   }
 });
@@ -1298,7 +1343,9 @@ app.get("/api/agents/:id/branches", async (req, res) => {
   }
 
   // Fetch remotes first so we see remote branches
-  await execPromise("git", ["fetch", "--all", "--prune"], { cwd, timeout: 15000 }).catch(() => {});
+  await execPromise("git", ["fetch", "--all", "--prune"], { cwd, timeout: 15000 }).catch((err) => {
+    console.error(`[api] git fetch --all --prune failed in ${cwd} (continuing):`, err.message);
+  });
 
   const [localRaw, remoteRaw, currentBranch] = await Promise.all([
     gitExec(["branch", "--format=%(refname:short)"], cwd),
@@ -1379,12 +1426,14 @@ app.delete("/api/agents/:id/branches/local", async (req, res) => {
         await execPromise("git", ["branch", "-D", branch], { cwd, timeout: 5000 });
         deleted.push(branch);
       } catch (err) {
+        console.error(`[api] Failed to delete local branch "${branch}":`, err.message);
         skipped.push({ branch, reason: err.message || "Failed to delete" });
       }
     }
 
     res.json({ ok: true, deleted, skipped });
   } catch (err) {
+    console.error("[api] Delete local branches failed:", err);
     res.status(400).json({ error: err.message || "Failed to delete local branches" });
   }
 });
@@ -1405,6 +1454,7 @@ app.post("/api/agents/:id/checkout", async (req, res) => {
     const current = await gitExec(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
     res.json({ ok: true, branch: current || branch });
   } catch (err) {
+    console.error(`[api] Checkout branch "${branch}" failed:`, err);
     res.status(400).json({ error: err.message || "Failed to checkout branch" });
   }
 });
@@ -1703,6 +1753,7 @@ app.post("/api/suggestions", (req, res) => {
     });
     res.status(201).json(suggestion);
   } catch (err) {
+    console.error("[api] POST /api/suggestions failed:", err);
     res.status(400).json({ error: err.message });
   }
 });
@@ -1991,7 +2042,8 @@ wss.on("connection", (ws) => {
     let data;
     try {
       data = JSON.parse(raw);
-    } catch {
+    } catch (err) {
+      console.error("[ws] Invalid JSON from client:", err.message);
       ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
       return;
     }
@@ -2091,6 +2143,7 @@ wss.on("connection", (ws) => {
         try {
           await sendMessage(data.agentId, text, attachments);
         } catch (err) {
+          console.error(`[ws] sendMessage failed for agent ${data.agentId}:`, err);
           if (ws.readyState === ws.OPEN) {
             ws.send(
               JSON.stringify({ type: "error", agentId: data.agentId, message: err.message })
@@ -2149,7 +2202,24 @@ wss.on("connection", (ws) => {
   });
 });
 
+// --- Express error-handling middleware (must be registered last) ---
+// Catches errors thrown synchronously or passed to next(err) from any route.
+// Logs the full error to stderr so it surfaces in `docker logs`.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  console.error(`[express] Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) {
+    return;
+  }
+  res.status(err.status || 500).json({
+    error: err.message || "Internal server error",
+  });
+});
+
 const PORT = process.env.PORT || 3001;
+server.on("error", (err) => {
+  console.error(`[server] HTTP server error:`, err);
+});
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Claude Web UI running on http://0.0.0.0:${PORT}`);
   // Initialize suggestions for all profiles
@@ -2172,7 +2242,11 @@ onRunComplete(({ taskId, runId, task, runEntry }) => {
   });
   for (const client of wss.clients) {
     if (client.readyState === client.OPEN) {
-      try { client.send(msg); } catch {}
+      try {
+        client.send(msg);
+      } catch (err) {
+        console.error("[ws] Failed to broadcast task_run_complete:", err);
+      }
     }
   }
 });

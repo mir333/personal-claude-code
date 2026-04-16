@@ -67,7 +67,8 @@ export async function listWorktrees(repoDir) {
   try {
     const output = await gitExec(["worktree", "list", "--porcelain"], repoDir);
     return parseWorktreeList(output);
-  } catch {
+  } catch (err) {
+    console.error(`[worktrees] listWorktrees failed for ${repoDir}:`, err.message);
     return [];
   }
 }
@@ -97,7 +98,8 @@ export async function getMainWorktreeDir(anyWorktreeDir) {
       : path.resolve(anyWorktreeDir, commonDir);
 
     return path.dirname(absCommonDir);
-  } catch {
+  } catch (err) {
+    console.error(`[worktrees] getMainWorktreeDir failed for ${anyWorktreeDir}:`, err.message);
     return null;
   }
 }
@@ -112,7 +114,8 @@ export function isLinkedWorktree(dirPath) {
     if (!existsSync(gitPath)) return false;
     const stat = statSync(gitPath);
     return stat.isFile(); // linked worktrees have .git as a file, not directory
-  } catch {
+  } catch (err) {
+    console.error(`[worktrees] isLinkedWorktree failed for ${dirPath}:`, err.message);
     return false;
   }
 }
@@ -146,6 +149,7 @@ export async function addWorktree(mainDir, branch, targetPath, createBranch = fa
     }
     return { ok: true };
   } catch (err) {
+    console.error(`[worktrees] addWorktree initial attempt failed (branch=${branch}, target=${targetPath}):`, err.message);
     // If branch doesn't exist locally, try fetching and retrying
     if (!createBranch && err.message && err.message.includes("is not a commit")) {
       try {
@@ -156,6 +160,7 @@ export async function addWorktree(mainDir, branch, targetPath, createBranch = fa
         });
         return { ok: true };
       } catch (retryErr) {
+        console.error(`[worktrees] addWorktree retry after fetch failed (branch=${branch}):`, retryErr.message);
         return { ok: false, error: retryErr.message || "Failed to add worktree" };
       }
     }
@@ -177,6 +182,7 @@ export async function removeWorktree(mainDir, worktreePath) {
     });
     return { ok: true };
   } catch (err) {
+    console.error(`[worktrees] removeWorktree via git failed (worktree=${worktreePath}), trying manual cleanup:`, err.message);
     // If git worktree remove fails, try manual cleanup
     try {
       rmSync(worktreePath, { recursive: true, force: true });
@@ -184,6 +190,7 @@ export async function removeWorktree(mainDir, worktreePath) {
       await execPromise("git", ["worktree", "prune"], { cwd: mainDir, timeout: 10000 });
       return { ok: true };
     } catch (cleanupErr) {
+      console.error(`[worktrees] Manual cleanup of ${worktreePath} also failed:`, cleanupErr.message);
       return { ok: false, error: err.message || "Failed to remove worktree" };
     }
   }

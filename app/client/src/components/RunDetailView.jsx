@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog } from "@/components/ui/dialog";
 import ToolCallCard from "./ToolCallCard.jsx";
+import ErrorCard from "./ErrorCard.jsx";
 import Markdown from "./Markdown.jsx";
 import { formatDuration } from "@/lib/cron";
 
@@ -227,11 +228,7 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
                   {msg.durationMs > 0 && <span>{(msg.durationMs / 1000).toFixed(1)}s</span>}
                 </div>
               )}
-              {msg.type === "error" && (
-                <div className="max-w-3/4 bg-destructive/20 text-destructive rounded-lg px-4 py-2">
-                  {msg.message}
-                </div>
-              )}
+              {msg.type === "error" && <ErrorCard error={msg} />}
             </div>
           );
         })}
