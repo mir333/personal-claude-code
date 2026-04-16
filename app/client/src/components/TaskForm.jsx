@@ -4,11 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog } from "@/components/ui/dialog";
 import { CRON_PRESETS, describeCron } from "@/lib/cron";
-import { useModels } from "@/hooks/useModels.js";
+import { MODEL_OPTIONS } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 export default function TaskForm({ open, onClose, onSubmit, initial }) {
-  const { models: MODEL_OPTIONS } = useModels();
   const [name, setName] = useState(initial?.name || "");
   const [workingDirectory, setWorkingDirectory] = useState(initial?.workingDirectory || "");
   const [cronExpression, setCronExpression] = useState(initial?.cronExpression || "");
