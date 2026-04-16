@@ -45,7 +45,7 @@ export default function App() {
   const [drafts, setDrafts] = useState({}); // agentId -> { text, attachedFiles }
   const terminalDataRef = useRef(null);
   const { agents, gitStatuses, fetchAgents, createAgent, cloneRepo, removeAgent, updateAgentStatus, findAgentByWorkDir, fetchGitStatus, fetchAllGitStatuses, removeWorktree, removeWorktreeByPath, deleteAllLocalBranches } = useAgents();
-  const { projects, fetchDirectories } = useWorkspace();
+  const { projects, fetchDirectories, loaded: projectsLoaded } = useWorkspace();
   const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
   // Dynamic model list — fetched from /api/models on mount and refreshed
@@ -960,6 +960,7 @@ export default function App() {
             ]);
           }}
           projects={projects}
+          projectsLoaded={projectsLoaded}
           findAgentByWorkDir={findAgentByWorkDir}
           notificationsEnabled={notificationsEnabled}
           notificationsPermissionDenied={notificationsPermissionDenied}

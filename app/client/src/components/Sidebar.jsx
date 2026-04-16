@@ -960,6 +960,7 @@ export default function Sidebar({
   onDeleteProject,
   onRefresh,
   projects = [],
+  projectsLoaded = false,
   findAgentByWorkDir,
   notificationsEnabled,
   notificationsPermissionDenied,
@@ -1176,8 +1177,13 @@ export default function Sidebar({
           ))}
         </div>
 
-        {/* Agents not linked to any project or worktree */}
-        {agents.filter((a) => !allProjectPaths.has(a.workingDirectory)).length > 0 && (
+        {/* Agents not linked to any project or worktree.
+            Gated on `projectsLoaded` to avoid a flash on page refresh:
+            without it, agents can arrive before projects and every agent
+            would momentarily be classified as "custom" (because
+            allProjectPaths is still empty), causing the section to appear
+            and then vanish once projects load. */}
+        {projectsLoaded && agents.filter((a) => !allProjectPaths.has(a.workingDirectory)).length > 0 && (
           <>
             <Separator className="my-1" />
             <div className="p-2">

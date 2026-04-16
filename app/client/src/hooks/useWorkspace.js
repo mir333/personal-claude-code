@@ -3,6 +3,11 @@ import { useState, useCallback, useMemo } from "react";
 export function useWorkspace() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(false);
+  // True once the /api/workspace fetch has completed at least once —
+  // regardless of outcome. Consumers use this to distinguish "no projects
+  // exist" from "projects haven't been fetched yet", which matters for
+  // classifying agents as custom vs. project-bound on page load.
+  const [loaded, setLoaded] = useState(false);
 
   const fetchDirectories = useCallback(async () => {
     setLoading(true);
@@ -13,6 +18,7 @@ export function useWorkspace() {
       setProjects([]);
     } finally {
       setLoading(false);
+      setLoaded(true);
     }
   }, []);
 
@@ -22,5 +28,5 @@ export function useWorkspace() {
     [projects]
   );
 
-  return { projects, directories, loading, fetchDirectories };
+  return { projects, directories, loading, loaded, fetchDirectories };
 }
