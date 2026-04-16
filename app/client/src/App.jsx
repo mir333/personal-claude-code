@@ -14,7 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { MODEL_OPTIONS, getModelShortLabel } from "@/lib/models";
+import { getModelShortLabel } from "@/lib/models";
+import { useModels } from "./hooks/useModels.js";
 import { useAgents } from "./hooks/useAgents.js";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useWorkspace } from "./hooks/useWorkspace.js";
@@ -47,6 +48,9 @@ export default function App() {
   const { projects, fetchDirectories } = useWorkspace();
   const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
+  // Dynamic model list — fetched from /api/models on mount and refreshed
+  // every 1h by the hook itself. Replaces the previous hardcoded import.
+  const { models: modelOptions } = useModels();
   const {
     suggestions: allSuggestions,
     fetchSuggestions,
@@ -1234,7 +1238,7 @@ export default function App() {
                   </button>
                 )}
                 <SuggestionBar suggestions={activeSuggestions} actions={activeActions} onSelect={handleSuggestionSelect} onAction={(a) => handleSuggestionAction(a.resolvedValue)} onManage={() => setSuggestionManagerOpen(true)} />
-                <ChatInput key={selectedAgentId} onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} model={agentModels[selectedAgentId] || ""} onSetModel={handleSetModel} draftText={drafts[selectedAgentId]?.text || ""} draftFiles={drafts[selectedAgentId]?.attachedFiles || []} onDraftChange={(text, files) => setDrafts((prev) => ({ ...prev, [selectedAgentId]: { text, attachedFiles: files } }))} />
+                <ChatInput key={selectedAgentId} onSend={handleSend} onStop={handleStop} onClearContext={handleClearContext} onDeleteHistory={handleDeleteHistory} onReconnect={reconnect} connected={connected} isBusy={agents.find((a) => a.id === selectedAgentId)?.status === "busy"} interactiveQuestions={!!interactiveQuestions[selectedAgentId]} onToggleQuestions={handleToggleInteractiveQuestions} model={agentModels[selectedAgentId] || ""} onSetModel={handleSetModel} modelOptions={modelOptions} draftText={drafts[selectedAgentId]?.text || ""} draftFiles={drafts[selectedAgentId]?.attachedFiles || []} onDraftChange={(text, files) => setDrafts((prev) => ({ ...prev, [selectedAgentId]: { text, attachedFiles: files } }))} />
               </div>
             )}
             {editorOpen && (
@@ -1278,7 +1282,7 @@ export default function App() {
   );
 }
 
-function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions, model, onSetModel, draftText = "", draftFiles = [], onDraftChange }) {
+function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnect, connected, isBusy, interactiveQuestions, onToggleQuestions, model, onSetModel, modelOptions = [], draftText = "", draftFiles = [], onDraftChange }) {
   const [text, setText] = useState(draftText);
   const [attachedFiles, setAttachedFiles] = useState(draftFiles);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -1575,7 +1579,7 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
                 </span>
                 {!model && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
               </button>
-              {MODEL_OPTIONS.map((opt) => (
+              {modelOptions.map((opt) => (
                 <button
                   key={opt.value}
                   type="button"
@@ -1757,7 +1761,7 @@ function ChatInput({ onSend, onStop, onClearContext, onDeleteHistory, onReconnec
                 </span>
                 {!model && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
               </button>
-              {MODEL_OPTIONS.map((opt) => (
+              {modelOptions.map((opt) => (
                 <button
                   key={opt.value}
                   type="button"
