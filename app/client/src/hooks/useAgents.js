@@ -40,11 +40,13 @@ export function useAgents() {
     return data;
   }, []);
 
-  const cloneRepo = useCallback(async (repoFullName, provider = "github") => {
+  const cloneRepo = useCallback(async (repoFullName, provider = "github", accountId = null) => {
+    const body = { repoFullName, provider };
+    if (accountId) body.accountId = accountId;
     const res = await fetch("/api/agents/clone", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repoFullName, provider }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) {

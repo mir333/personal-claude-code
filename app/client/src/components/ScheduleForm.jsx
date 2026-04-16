@@ -6,15 +6,14 @@ import { Dialog } from "@/components/ui/dialog";
 import { CRON_PRESETS, describeCron } from "@/lib/cron";
 import { cn } from "@/lib/utils";
 
-const PROVIDERS = [
-  { id: "github", label: "GitHub" },
-  { id: "gitlab", label: "GitLab" },
-  { id: "azuredevops", label: "Azure DevOps" },
-];
+const PROVIDER_LABELS = {
+  github: "GitHub",
+  gitlab: "GitLab",
+  azuredevops: "Azure DevOps",
+};
 
 export default function ScheduleForm({ open, onClose, onSubmit, initial }) {
   const [name, setName] = useState(initial?.name || "");
-  const [provider, setProvider] = useState(initial?.provider || "github");
   const [repoFullName, setRepoFullName] = useState(initial?.repoFullName || "");
   const [cronExpression, setCronExpression] = useState(initial?.cronExpression || "0 9 * * 1-5");
   const [prompt, setPrompt] = useState(initial?.prompt || "");
@@ -26,27 +25,67 @@ export default function ScheduleForm({ open, onClose, onSubmit, initial }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  // Multi-account state
+  const [allAccounts, setAllAccounts] = useState([]);
+  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+
   const isEdit = !!initial;
 
   // Reset form when opened
   useEffect(() => {
     if (open) {
       setName(initial?.name || "");
-      setProvider(initial?.provider || "github");
       setRepoFullName(initial?.repoFullName || "");
       setCronExpression(initial?.cronExpression || "0 9 * * 1-5");
       setPrompt(initial?.prompt || "");
       setError("");
       setCronError("");
+      setRepos([]);
+      setSelectedAccount(null);
+
+      // Fetch accounts (flat array from API)
+      setAccountsLoading(true);
+      fetch("/api/git-config")
+        .then((r) => r.json())
+        .then((data) => {
+          const accounts = (data.accounts || [])
+            .filter((a) => a.hasToken)
+            .map((a) => ({
+              id: a.id,
+              label: a.label || "Default",
+              provider: a.type,
+              providerLabel: PROVIDER_LABELS[a.type] || a.type,
+            }));
+          setAllAccounts(accounts);
+
+          // If editing, try to match the initial provider+accountId
+          if (initial?.provider && initial?.accountId) {
+            const match = accounts.find((a) => a.id === initial.accountId);
+            if (match) setSelectedAccount(match);
+          } else if (initial?.provider) {
+            // Legacy: match by provider, pick first of that type
+            const match = accounts.find((a) => a.provider === initial.provider);
+            if (match) setSelectedAccount(match);
+          } else if (accounts.length === 1) {
+            setSelectedAccount(accounts[0]);
+          }
+        })
+        .catch(() => setAllAccounts([]))
+        .finally(() => setAccountsLoading(false));
     }
   }, [open, initial]);
 
-  // Load repos when provider changes
+  // Load repos when account changes
   useEffect(() => {
-    if (!open) return;
+    if (!open || !selectedAccount) {
+      setRepos([]);
+      return;
+    }
     setReposLoading(true);
     setRepos([]);
-    fetch(`/api/repos/${provider}`)
+    setRepoFilter("");
+    fetch(`/api/repos/${selectedAccount.provider}?accountId=${selectedAccount.id}`)
       .then((r) => {
         if (!r.ok) throw new Error("Failed to load repos");
         return r.json();
@@ -54,7 +93,7 @@ export default function ScheduleForm({ open, onClose, onSubmit, initial }) {
       .then((data) => setRepos(data))
       .catch(() => setRepos([]))
       .finally(() => setReposLoading(false));
-  }, [provider, open]);
+  }, [selectedAccount, open]);
 
   // Validate cron expression
   useEffect(() => {
@@ -91,7 +130,8 @@ export default function ScheduleForm({ open, onClose, onSubmit, initial }) {
     try {
       await onSubmit({
         name: name.trim(),
-        provider,
+        provider: selectedAccount?.provider || "github",
+        accountId: selectedAccount?.id || null,
         repoFullName,
         cronExpression,
         prompt: prompt.trim(),
@@ -134,82 +174,95 @@ export default function ScheduleForm({ open, onClose, onSubmit, initial }) {
           />
         </div>
 
-        {/* Provider */}
+        {/* Account selector */}
         <div>
-          <label className="text-xs text-muted-foreground font-medium">Git Provider</label>
-          <div className="flex gap-1 mt-1">
-            {PROVIDERS.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => setProvider(p.id)}
-                className={cn(
-                  "px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
-                  provider === p.id
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+          <label className="text-xs text-muted-foreground font-medium">Account</label>
+          {accountsLoading ? (
+            <div className="flex items-center gap-2 mt-1 py-2 text-sm text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading accounts...
+            </div>
+          ) : allAccounts.length === 0 ? (
+            <div className="mt-1 text-xs text-muted-foreground py-2">
+              No accounts configured. Add a token in Settings first.
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {allAccounts.map((acc) => (
+                <button
+                  key={acc.id}
+                  type="button"
+                  onClick={() => { setSelectedAccount(acc); setRepoFullName(""); }}
+                  className={cn(
+                    "px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
+                    selectedAccount?.id === acc.id
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {acc.label} ({acc.providerLabel})
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Repository */}
-        <div>
-          <label className="text-xs text-muted-foreground font-medium">Repository</label>
-          {reposLoading ? (
-            <div className="flex items-center gap-2 mt-1 py-2 text-sm text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Loading repos...
-            </div>
-          ) : repos.length === 0 ? (
-            <div className="mt-1 text-xs text-muted-foreground py-2">
-              No repos found. Make sure your {PROVIDERS.find((p) => p.id === provider)?.label} token is configured in Settings.
-            </div>
-          ) : (
-            <>
-              <div className="relative mt-1">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-                <Input
-                  placeholder="Filter repos..."
-                  value={repoFilter}
-                  onChange={(e) => setRepoFilter(e.target.value)}
-                  className="pl-8 h-8 text-xs"
-                />
+        {selectedAccount && (
+          <div>
+            <label className="text-xs text-muted-foreground font-medium">Repository</label>
+            {reposLoading ? (
+              <div className="flex items-center gap-2 mt-1 py-2 text-sm text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Loading repos...
               </div>
-              <div className="mt-1 max-h-36 overflow-y-auto rounded-md border border-input">
-                {filteredRepos.slice(0, 50).map((repo) => (
-                  <button
-                    key={repo.full_name}
-                    type="button"
-                    onClick={() => setRepoFullName(repo.full_name)}
-                    className={cn(
-                      "w-full text-left px-3 py-1.5 text-xs transition-colors",
-                      "hover:bg-accent",
-                      repoFullName === repo.full_name && "bg-accent font-medium text-primary"
-                    )}
-                  >
-                    <span className="truncate block">{repo.full_name}</span>
-                    {repo.description && (
-                      <span className="truncate block text-muted-foreground/60 text-[11px]">{repo.description}</span>
-                    )}
-                  </button>
-                ))}
-                {filteredRepos.length === 0 && (
-                  <p className="text-xs text-muted-foreground text-center py-3">No matching repos</p>
+            ) : repos.length === 0 ? (
+              <div className="mt-1 text-xs text-muted-foreground py-2">
+                No repos found for this account.
+              </div>
+            ) : (
+              <>
+                <div className="relative mt-1">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                  <Input
+                    placeholder="Filter repos..."
+                    value={repoFilter}
+                    onChange={(e) => setRepoFilter(e.target.value)}
+                    className="pl-8 h-8 text-xs"
+                  />
+                </div>
+                <div className="mt-1 max-h-36 overflow-y-auto rounded-md border border-input">
+                  {filteredRepos.slice(0, 50).map((repo) => (
+                    <button
+                      key={repo.full_name}
+                      type="button"
+                      onClick={() => setRepoFullName(repo.full_name)}
+                      className={cn(
+                        "w-full text-left px-3 py-1.5 text-xs transition-colors",
+                        "hover:bg-accent",
+                        repoFullName === repo.full_name && "bg-accent font-medium text-primary"
+                      )}
+                    >
+                      <span className="truncate block">{repo.full_name}</span>
+                      {repo.description && (
+                        <span className="truncate block text-muted-foreground/60 text-[11px]">{repo.description}</span>
+                      )}
+                    </button>
+                  ))}
+                  {filteredRepos.length === 0 && (
+                    <p className="text-xs text-muted-foreground text-center py-3">No matching repos</p>
+                  )}
+                </div>
+                {repoFullName && (
+                  <p className="text-xs text-primary mt-1 flex items-center gap-1">
+                    <GitBranch className="h-3 w-3" />
+                    {repoFullName}
+                  </p>
                 )}
-              </div>
-              {repoFullName && (
-                <p className="text-xs text-primary mt-1 flex items-center gap-1">
-                  <GitBranch className="h-3 w-3" />
-                  {repoFullName}
-                </p>
-              )}
-            </>
-          )}
-        </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Cron Expression */}
         <div>
@@ -276,7 +329,7 @@ export default function ScheduleForm({ open, onClose, onSubmit, initial }) {
           <Button
             type="submit"
             className="flex-1"
-            disabled={submitting || !name.trim() || !repoFullName || !cronExpression || !prompt.trim() || !!cronError}
+            disabled={submitting || !name.trim() || !repoFullName || !selectedAccount || !cronExpression || !prompt.trim() || !!cronError}
           >
             {submitting && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
             {isEdit ? "Save Changes" : "Create Schedule"}

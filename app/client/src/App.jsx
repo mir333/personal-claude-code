@@ -397,41 +397,72 @@ export default function App() {
     fetchSuggestions();
   }, [authenticated, fetchAgents, fetchDirectories, fetchSuggestions]);
 
+  // Use a ref for conversations to avoid stale closures in the agent-switch effect,
+  // without adding conversations to the dependency array (which would re-run on every message).
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+
   useEffect(() => {
     if (!selectedAgentId) return;
-    if (conversations[selectedAgentId]?.entries?.length) return;
-    fetch(`/api/agents/${selectedAgentId}/history?limit=50&offset=0`)
-      .then((r) => r.ok ? r.json() : { entries: [], total: 0 })
-      .then(({ entries, total }) => {
-        if (entries.length > 0 || total === 0) {
-          setConversations((prev) => {
-            if (prev[selectedAgentId]?.entries?.length) return prev;
-            return {
-              ...prev,
-              [selectedAgentId]: { entries, total, hasMore: entries.length < total },
-            };
-          });
-        }
-      })
-      .catch(() => {});
-    // Recover pending question state and model from server (e.g. after page reload)
+
+    // Helper: fetch and set history for this agent
+    function fetchHistory(force) {
+      fetch(`/api/agents/${selectedAgentId}/history?limit=50&offset=0`)
+        .then((r) => r.ok ? r.json() : { entries: [], total: 0 })
+        .then(({ entries, total }) => {
+          if (entries.length > 0 || total === 0) {
+            setConversations((prev) => {
+              // If not forced, don't overwrite existing data
+              if (!force && prev[selectedAgentId]?.entries?.length) return prev;
+              return {
+                ...prev,
+                [selectedAgentId]: { entries, total, hasMore: entries.length < total },
+              };
+            });
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Always fetch latest agent details (status, pending question, model)
+    // so we have accurate state after switching.
     fetch(`/api/agents/${selectedAgentId}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
-        if (data?.pendingQuestion) {
+        if (!data) return;
+        // Update agent status so the UI reflects current state immediately
+        if (data.status) {
+          updateAgentStatus(selectedAgentId, data.status);
+        }
+        if (data.pendingQuestion) {
           setPendingQuestions((prev) => ({
             ...prev,
             [selectedAgentId]: { input: data.pendingQuestion.input, toolUseId: data.pendingQuestion.toolUseId },
           }));
         }
-        if (data?.interactiveQuestions !== undefined) {
+        if (data.interactiveQuestions !== undefined) {
           setInteractiveQuestions((prev) => ({ ...prev, [selectedAgentId]: !!data.interactiveQuestions }));
         }
-        if (data?.model) {
+        if (data.model) {
           setAgentModels((prev) => ({ ...prev, [selectedAgentId]: data.model }));
         }
+
+        // If the agent is busy, always force-refresh history to get the latest state.
+        // For idle agents, only fetch if we don't already have cached data.
+        const hasCachedData = conversationsRef.current[selectedAgentId]?.entries?.length > 0;
+        if (data.status === "busy") {
+          fetchHistory(true);
+        } else if (!hasCachedData) {
+          fetchHistory(false);
+        }
       })
-      .catch(() => {});
+      .catch(() => {
+        // Agent details fetch failed — still try to load history if no cached data
+        const hasCachedData = conversationsRef.current[selectedAgentId]?.entries?.length > 0;
+        if (!hasCachedData) {
+          fetchHistory(false);
+        }
+      });
   }, [selectedAgentId]);
 
   useEffect(() => {
@@ -549,6 +580,16 @@ export default function App() {
     setTerminalOpen(false);
     autoScrollRef.current = true;
     setShowScrollDown(false);
+
+    // Always subscribe to the agent so we receive live updates if it's busy.
+    // The server handles duplicate subscriptions gracefully (evicts old listener).
+    if (id) {
+      send({
+        type: "subscribe",
+        agentId: id,
+        lastEventIndex: lastEventIndexRef.current[id] || 0,
+      });
+    }
   }
 
   function handleScrollToBottom() {
@@ -884,7 +925,7 @@ export default function App() {
           selectedId={selectedAgentId}
           onSelect={handleSelectAgent}
           onCreate={async (name, localOnlyOrWorkDir, provider) => { const a = await createAgent(name, localOnlyOrWorkDir, provider); fetchDirectories(); return a; }}
-          onClone={async (repoFullName, provider) => { const a = await cloneRepo(repoFullName, provider); fetchDirectories(); return a; }}
+          onClone={async (repoFullName, provider, accountId) => { const a = await cloneRepo(repoFullName, provider, accountId); fetchDirectories(); return a; }}
           onDelete={handleDeleteAgent}
           onDeleteProject={handleDeleteProject}
           onRefresh={async () => {

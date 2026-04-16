@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronRight, Search, LogOut, Clock, RefreshCw, AlertTriangle, X, Trash2 } from "lucide-react";
+import { FolderOpen, Plus, Circle, BellRing, BellOff, GitBranch, Settings, Loader2, Download, ChevronRight, Search, LogOut, Clock, RefreshCw, AlertTriangle, X, Trash2, Key, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import NewAgentForm from "./NewAgentForm.jsx";
-import GitHubCloneDialog from "./GitHubClonePanel.jsx";
+import CloneDialog from "./ClonePanel.jsx";
 import { Dialog } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
@@ -398,14 +398,63 @@ function ProjectItem({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Settings panel (unchanged from original)                           */
+/*  Settings panel — multi-account support per provider                */
 /* ------------------------------------------------------------------ */
 const SETTINGS_TABS = [
   { id: "user", label: "User" },
   { id: "github", label: "GitHub" },
   { id: "gitlab", label: "GitLab" },
   { id: "azuredevops", label: "Azure DevOps" },
+  { id: "apitokens", label: "API Tokens" },
 ];
+
+const PROVIDER_HINTS = {
+  github: {
+    tokenHint: (linkClass) => (
+      <span>
+        Generate at{" "}
+        <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
+          github.com/settings/tokens
+        </a>
+        . Select "Classic" token with <b>repo</b> scope.
+      </span>
+    ),
+    extraFields: [],
+  },
+  gitlab: {
+    tokenHint: (linkClass) => (
+      <span>
+        Generate at{" "}
+        <a href="https://gitlab.com/-/user_settings/personal_access_tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
+          GitLab &gt; Settings &gt; Access Tokens
+        </a>
+        . Select scopes: <b>api</b>, <b>read_repository</b>, <b>write_repository</b>.
+      </span>
+    ),
+    extraFields: [{ key: "url", label: "URL", placeholder: "https://gitlab.com", hint: "Change for self-hosted GitLab instances." }],
+  },
+  azuredevops: {
+    tokenHint: (linkClass) => (
+      <span>
+        Generate at{" "}
+        <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" className={linkClass}>
+          dev.azure.com
+        </a>
+        {" "}&gt; User Settings &gt; Personal Access Tokens. Select scope: <b>Code (Read &amp; Write)</b>.
+      </span>
+    ),
+    extraFields: [{ key: "organization", label: "Organization", placeholder: "my-org", hint: "Your Azure DevOps organization name from the URL: dev.azure.com/org-name" }],
+  },
+};
+
+function SaveButton({ saving, saved, onClick }) {
+  return (
+    <Button variant="outline" size="sm" className="w-full" onClick={onClick} disabled={saving}>
+      {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+      {saved ? "Saved!" : "Save"}
+    </Button>
+  );
+}
 
 function useSettingsSave(buildBody, onSuccess) {
   const [saving, setSaving] = useState(false);
@@ -434,15 +483,6 @@ function useSettingsSave(buildBody, onSuccess) {
   return { saving, saved, handleSave };
 }
 
-function SaveButton({ saving, saved, onClick }) {
-  return (
-    <Button variant="outline" size="sm" className="w-full" onClick={onClick} disabled={saving}>
-      {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-      {saved ? "Saved!" : "Save"}
-    </Button>
-  );
-}
-
 function UserTab({ name, setName, email, setEmail }) {
   const { saving, saved, handleSave } = useSettingsSave(() => ({ name, email }));
   const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
@@ -462,123 +502,360 @@ function UserTab({ name, setName, email, setEmail }) {
   );
 }
 
-function GitHubTab({ providers }) {
-  const [token, setToken] = useState("");
-  const [hasToken, setHasToken] = useState(providers.github?.hasToken || false);
-  const { saving, saved, handleSave } = useSettingsSave(
-    () => ({ githubToken: token }),
-    (data) => { setToken(""); setHasToken(data.providers?.github?.hasToken || false); }
-  );
+/**
+ * Generic multi-account provider tab.
+ * Works with the flat accounts array — filters by type (providerKey).
+ * Supports add / remove operations. Saves the full list back to the server.
+ */
+function ProviderAccountsTab({ providerKey, allAccounts, onAccountsUpdated }) {
+  const hints = PROVIDER_HINTS[providerKey];
   const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
   const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
   const linkClass = "underline hover:text-foreground";
 
+  // Local editable state — only the accounts for this provider type
+  const [accounts, setAccounts] = useState(() =>
+    allAccounts.filter((a) => a.type === providerKey).map((a) => ({ ...a, newToken: "" }))
+  );
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function updateAccount(index, field, value) {
+    setAccounts((prev) => prev.map((a, i) => (i === index ? { ...a, [field]: value } : a)));
+  }
+
+  function addAccount() {
+    const newAcc = { id: null, label: "", newToken: "", hasToken: false, type: providerKey };
+    for (const f of hints.extraFields) {
+      newAcc[f.key] = f.key === "url" ? "https://gitlab.com" : "";
+    }
+    setAccounts((prev) => [...prev, newAcc]);
+  }
+
+  function removeAccount(index) {
+    setAccounts((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      // Build the full flat array: other provider accounts untouched + this provider's edited accounts
+      const otherAccounts = allAccounts.filter((a) => a.type !== providerKey);
+      const theseAccounts = accounts.map((a) => {
+        const entry = { id: a.id || undefined, label: a.label, type: providerKey };
+        if (a.newToken) entry.token = a.newToken;
+        for (const f of hints.extraFields) {
+          entry[f.key] = a[f.key] || "";
+        }
+        return entry;
+      });
+
+      const res = await fetch("/api/git-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accounts: [...otherAccounts, ...theseAccounts] }),
+      });
+      const data = await res.json();
+
+      // Refresh from server response
+      const updatedAll = data.accounts || [];
+      setAccounts(updatedAll.filter((a) => a.type === providerKey).map((a) => ({ ...a, newToken: "" })));
+      if (onAccountsUpdated) onAccountsUpdated(updatedAll);
+
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <div className="space-y-2">
-      <div>
-        <label className="text-xs text-muted-foreground">Token (PAT)</label>
-        <input type="password" value={token} onChange={(e) => setToken(e.target.value)} className={inputClass}
-          placeholder={hasToken ? "Token configured \u2713" : "Not set"} />
-        <p className={hintClass}>
-          Generate at{" "}
-          <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
-            github.com/settings/tokens
-          </a>
-          . Select "Classic" token with <b>repo</b> scope.
-        </p>
-      </div>
+    <div className="space-y-3">
+      {accounts.map((account, i) => (
+        <div key={account.id || `new-${i}`} className="relative space-y-1.5 p-2.5 rounded-md border border-border">
+          {/* Header row: label + remove */}
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={account.label}
+              onChange={(e) => updateAccount(i, "label", e.target.value)}
+              className="flex-1 px-2 py-1 text-sm rounded-md border border-input bg-background"
+              placeholder="Label (e.g., Personal, Work)"
+            />
+            {accounts.length > 1 && (
+              <button
+                onClick={() => removeAccount(i)}
+                className="text-muted-foreground hover:text-destructive shrink-0"
+                title="Remove account"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Token */}
+          <div>
+            <label className="text-xs text-muted-foreground">Token (PAT)</label>
+            <input
+              type="password"
+              value={account.newToken}
+              onChange={(e) => updateAccount(i, "newToken", e.target.value)}
+              className={inputClass}
+              placeholder={account.hasToken ? "Token configured \u2713" : "Paste token here"}
+            />
+            {i === 0 && <p className={hintClass}>{hints.tokenHint(linkClass)}</p>}
+          </div>
+
+          {/* Provider-specific extra fields */}
+          {hints.extraFields.map((f) => (
+            <div key={f.key}>
+              <label className="text-xs text-muted-foreground">{f.label}</label>
+              <input
+                type="text"
+                value={account[f.key] || ""}
+                onChange={(e) => updateAccount(i, f.key, e.target.value)}
+                className={inputClass}
+                placeholder={f.placeholder}
+              />
+              {i === 0 && f.hint && <p className={hintClass}>{f.hint}</p>}
+            </div>
+          ))}
+        </div>
+      ))}
+
+      <button
+        onClick={addAccount}
+        className="w-full flex items-center justify-center gap-1 py-1.5 text-xs text-muted-foreground hover:text-foreground border border-dashed border-border rounded-md transition-colors hover:border-foreground/30"
+      >
+        <Plus className="h-3 w-3" />
+        Add Account
+      </button>
+
       <SaveButton saving={saving} saved={saved} onClick={handleSave} />
     </div>
   );
 }
 
-function GitLabTab({ providers }) {
-  const [token, setToken] = useState("");
-  const [url, setUrl] = useState(providers.gitlab?.url || "https://gitlab.com");
-  const [hasToken, setHasToken] = useState(providers.gitlab?.hasToken || false);
-  const { saving, saved, handleSave } = useSettingsSave(
-    () => {
-      const body = { gitlabUrl: url };
-      if (token) body.gitlabToken = token;
-      return body;
-    },
-    (data) => { setToken(""); setHasToken(data.providers?.gitlab?.hasToken || false); }
-  );
+/**
+ * API Tokens tab — lets the user create/revoke bearer tokens that authenticate
+ * against the Vercel AI SDK compatible endpoint. Each token is bound to a
+ * specific agent.
+ */
+function ApiTokensTab({ agents }) {
   const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
   const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
-  const linkClass = "underline hover:text-foreground";
+
+  const [tokens, setTokens] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [label, setLabel] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [newToken, setNewToken] = useState(null); // { token, label, agentId }
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function reload() {
+    try {
+      const res = await fetch("/api/api-tokens");
+      if (res.ok) setTokens(await res.json());
+    } catch {
+      // ignore
+    } finally {
+      setLoaded(true);
+    }
+  }
+
+  useEffect(() => {
+    reload();
+  }, []);
+
+  async function handleCreate() {
+    setError(null);
+    if (!label.trim()) {
+      setError("Label is required");
+      return;
+    }
+    if (!agentId) {
+      setError("Pick an agent to bind this token to");
+      return;
+    }
+    setCreating(true);
+    try {
+      const res = await fetch("/api/api-tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: label.trim(), agentId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Failed to create token");
+        return;
+      }
+      setNewToken({ token: data.token, label: data.label, agentId: data.agentId });
+      setLabel("");
+      setAgentId("");
+      reload();
+    } catch (err) {
+      setError(err.message || "Failed to create token");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm("Revoke this token? Any clients using it will stop working.")) return;
+    try {
+      await fetch(`/api/api-tokens/${id}`, { method: "DELETE" });
+      reload();
+    } catch {
+      // ignore
+    }
+  }
+
+  async function copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore
+    }
+  }
+
+  function agentLabel(id) {
+    const a = (agents || []).find((x) => x.id === id);
+    return a ? a.name : "(unknown agent)";
+  }
+
+  const baseUrl = typeof window !== "undefined" ? `${window.location.origin}/api/v1` : "/api/v1";
 
   return (
-    <div className="space-y-2">
-      <div>
-        <label className="text-xs text-muted-foreground">Token (PAT)</label>
-        <input type="password" value={token} onChange={(e) => setToken(e.target.value)} className={inputClass}
-          placeholder={hasToken ? "Token configured \u2713" : "Not set"} />
-        <p className={hintClass}>
-          Generate at{" "}
-          <a href="https://gitlab.com/-/user_settings/personal_access_tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
-            GitLab &gt; Settings &gt; Access Tokens
-          </a>
-          . Select scopes: <b>api</b>, <b>read_repository</b>, <b>write_repository</b>.
-        </p>
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Generate bearer tokens to call this instance using the Vercel AI SDK
+        (OpenAI-compatible). Each token is bound to a specific agent — requests
+        run as that agent and reuse its conversation context.
+      </p>
+
+      <div className="rounded-md border border-border p-2.5 text-[11px] text-muted-foreground font-mono bg-muted/30 break-all">
+        <div>Base URL: <span className="text-foreground">{baseUrl}</span></div>
+        <div>Path: <span className="text-foreground">/chat/completions</span></div>
       </div>
-      <div>
-        <label className="text-xs text-muted-foreground">URL</label>
-        <input type="text" value={url} onChange={(e) => setUrl(e.target.value)} className={inputClass}
-          placeholder="https://gitlab.com" />
-        <p className={hintClass}>Change for self-hosted GitLab instances.</p>
+
+      {/* Reveal newly-created token once */}
+      {newToken && (
+        <div className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-2.5 space-y-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-yellow-700 dark:text-yellow-400">
+            <Key className="h-3 w-3" />
+            Copy your token now — it won't be shown again
+          </div>
+          <div className="flex items-center gap-1.5">
+            <code className="flex-1 px-2 py-1 text-xs bg-background border border-border rounded font-mono break-all">
+              {newToken.token}
+            </code>
+            <button
+              onClick={() => copyToClipboard(newToken.token)}
+              className="shrink-0 p-1 text-muted-foreground hover:text-foreground"
+              title="Copy token"
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            Bound to agent: <span className="text-foreground">{agentLabel(newToken.agentId)}</span>
+          </div>
+          <button
+            onClick={() => setNewToken(null)}
+            className="text-[11px] underline text-muted-foreground hover:text-foreground"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Create form */}
+      <div className="space-y-1.5 p-2.5 rounded-md border border-border">
+        <div>
+          <label className="text-xs text-muted-foreground">Label</label>
+          <input
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            className={inputClass}
+            placeholder="e.g. my-laptop, CI pipeline"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground">Bind to agent</label>
+          <select
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            className={inputClass}
+          >
+            <option value="">Select an agent…</option>
+            {(agents || []).map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+          <p className={hintClass}>
+            Requests using this token will be processed by this agent, reusing its
+            conversation context.
+          </p>
+        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        <Button variant="outline" size="sm" className="w-full" onClick={handleCreate} disabled={creating}>
+          {creating ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Plus className="h-3 w-3 mr-1" />}
+          Generate token
+        </Button>
       </div>
-      <SaveButton saving={saving} saved={saved} onClick={handleSave} />
+
+      {/* Existing tokens */}
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium text-muted-foreground">Existing tokens</div>
+        {!loaded ? (
+          <div className="flex items-center justify-center py-4 text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          </div>
+        ) : tokens.length === 0 ? (
+          <div className="text-xs text-muted-foreground italic px-2 py-1.5">
+            No tokens yet.
+          </div>
+        ) : (
+          tokens.map((t) => (
+            <div key={t.id} className="flex items-start justify-between gap-2 p-2 rounded-md border border-border">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{t.label}</div>
+                <div className="text-[11px] text-muted-foreground truncate">
+                  Agent: {agentLabel(t.agentId)}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  Created {new Date(t.createdAt).toLocaleDateString()}
+                  {t.lastUsedAt ? ` · Last used ${new Date(t.lastUsedAt).toLocaleDateString()}` : " · Never used"}
+                </div>
+              </div>
+              <button
+                onClick={() => handleDelete(t.id)}
+                className="shrink-0 p-1 text-muted-foreground hover:text-destructive"
+                title="Revoke token"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
 
-function AzureDevOpsTab({ providers }) {
-  const [token, setToken] = useState("");
-  const [org, setOrg] = useState(providers.azuredevops?.organization || "");
-  const [hasToken, setHasToken] = useState(providers.azuredevops?.hasToken || false);
-  const { saving, saved, handleSave } = useSettingsSave(
-    () => {
-      const body = { azuredevopsOrg: org };
-      if (token) body.azuredevopsToken = token;
-      return body;
-    },
-    (data) => { setToken(""); setHasToken(data.providers?.azuredevops?.hasToken || false); }
-  );
-  const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
-  const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
-  const linkClass = "underline hover:text-foreground";
-
-  return (
-    <div className="space-y-2">
-      <div>
-        <label className="text-xs text-muted-foreground">Token (PAT)</label>
-        <input type="password" value={token} onChange={(e) => setToken(e.target.value)} className={inputClass}
-          placeholder={hasToken ? "Token configured \u2713" : "Not set"} />
-        <p className={hintClass}>
-          Generate at{" "}
-          <a href="https://dev.azure.com" target="_blank" rel="noopener noreferrer" className={linkClass}>
-            dev.azure.com
-          </a>
-          {" "}&gt; User Settings &gt; Personal Access Tokens. Select scope: <b>Code (Read &amp; Write)</b>.
-        </p>
-      </div>
-      <div>
-        <label className="text-xs text-muted-foreground">Organization</label>
-        <input type="text" value={org} onChange={(e) => setOrg(e.target.value)} className={inputClass}
-          placeholder="my-org" />
-        <p className={hintClass}>Your Azure DevOps organization name from the URL: dev.azure.com/<b>org-name</b></p>
-      </div>
-      <SaveButton saving={saving} saved={saved} onClick={handleSave} />
-    </div>
-  );
-}
-
-function GitSettingsPanel({ onClose }) {
+function GitSettingsPanel({ onClose, agents }) {
   const [activeTab, setActiveTab] = useState("user");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [providers, setProviders] = useState({});
+  const [accounts, setAccounts] = useState([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -587,7 +864,7 @@ function GitSettingsPanel({ onClose }) {
       .then((data) => {
         setName(data.name || "");
         setEmail(data.email || "");
-        setProviders(data.providers || {});
+        setAccounts(data.accounts || []);
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
@@ -628,9 +905,10 @@ function GitSettingsPanel({ onClose }) {
       ) : (
         <>
           {activeTab === "user" && <UserTab name={name} setName={setName} email={email} setEmail={setEmail} />}
-          {activeTab === "github" && <GitHubTab providers={providers} />}
-          {activeTab === "gitlab" && <GitLabTab providers={providers} />}
-          {activeTab === "azuredevops" && <AzureDevOpsTab providers={providers} />}
+          {activeTab === "github" && <ProviderAccountsTab providerKey="github" allAccounts={accounts} onAccountsUpdated={setAccounts} />}
+          {activeTab === "gitlab" && <ProviderAccountsTab providerKey="gitlab" allAccounts={accounts} onAccountsUpdated={setAccounts} />}
+          {activeTab === "azuredevops" && <ProviderAccountsTab providerKey="azuredevops" allAccounts={accounts} onAccountsUpdated={setAccounts} />}
+          {activeTab === "apitokens" && <ApiTokensTab agents={agents} />}
         </>
       )}
     </div>
@@ -685,9 +963,7 @@ export default function Sidebar({
     fetch("/api/git-config")
       .then((r) => r.json())
       .then((data) => {
-        const p = data.providers || {};
-        const anyToken = p.github?.hasToken || p.gitlab?.hasToken || p.azuredevops?.hasToken || data.hasToken;
-        setGitConfigured(!!data.name && !!data.email && anyToken);
+        setGitConfigured(!!data.name && !!data.email && !!data.hasToken);
       })
       .catch(() => {});
   }, [showSettings]);
@@ -826,7 +1102,7 @@ export default function Sidebar({
       </div>
       <Separator />
       <Dialog open={showSettings} onClose={() => setShowSettings(false)}>
-        <GitSettingsPanel onClose={() => setShowSettings(false)} />
+        <GitSettingsPanel onClose={() => setShowSettings(false)} agents={agents} />
       </Dialog>
       <ScrollArea className="flex-1">
         <div className="p-2">
@@ -955,11 +1231,11 @@ export default function Sidebar({
             </Button>
           </div>
         )}
-        <GitHubCloneDialog
+        <CloneDialog
           open={showClone}
           onClose={() => setShowClone(false)}
-          onClone={async (repoFullName, provider) => {
-            const agent = await onClone(repoFullName, provider);
+          onClone={async (repoFullName, provider, accountId) => {
+            const agent = await onClone(repoFullName, provider, accountId);
             setShowClone(false);
             onSelect(agent.id);
           }}

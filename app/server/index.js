@@ -46,6 +46,10 @@ import {
   writeProviders,
   getProviderToken,
   getProviderConfig,
+  getDefaultAccount,
+  getAccountById,
+  getAllAccounts,
+  getProviderConfigByAccountId,
   syncGitCredentials,
   githubApi,
   gitlabApi,
@@ -66,6 +70,12 @@ import {
   getMainWorktreeDir,
   buildWorktreePath,
 } from "./worktrees.js";
+import {
+  listApiTokens,
+  createApiToken,
+  deleteApiToken,
+  resolveApiToken,
+} from "./apiTokens.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -297,6 +307,225 @@ app.get("/api/webhooks/tasks/:taskId/:token/runs/:runId/artifacts/:filename", (r
   res.sendFile(filePath, { dotfiles: "allow" });
 });
 
+// --- Vercel AI SDK compatible endpoint (OpenAI-compatible) ---
+// Authenticated via Bearer token from Authorization header.
+// Each token is bound to a specific agent, so calls run as that agent.
+//
+// Endpoint: POST /api/v1/chat/completions
+// Body: { model?, messages: [{ role, content }], stream?: boolean }
+// Stream: Server-Sent Events in OpenAI chat-completion chunk format.
+
+function extractBearerToken(req) {
+  const h = req.headers["authorization"] || req.headers["Authorization"];
+  if (!h || typeof h !== "string") return null;
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1].trim() : null;
+}
+
+function extractLastUserMessage(messages) {
+  if (!Array.isArray(messages)) return "";
+  // AI SDK sends the full conversation; Claude agents already maintain their
+  // own session history via sessionId, so we only forward the latest user turn.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === "user") {
+      if (typeof m.content === "string") return m.content;
+      if (Array.isArray(m.content)) {
+        return m.content
+          .filter((p) => p && (p.type === "text" || typeof p.text === "string"))
+          .map((p) => p.text || "")
+          .join("");
+      }
+    }
+  }
+  return "";
+}
+
+app.get("/api/v1/models", (req, res) => {
+  const token = extractBearerToken(req);
+  if (!token) return res.status(401).json({ error: { message: "Missing bearer token", type: "invalid_request_error" } });
+  const resolved = resolveApiToken(token);
+  if (!resolved) return res.status(401).json({ error: { message: "Invalid token", type: "invalid_request_error" } });
+
+  // Report a single synthetic model that maps to the agent bound to this token.
+  const agent = getAgent(resolved.agentId);
+  const modelId = agent ? `claude-agent-${agent.name}` : "claude-agent";
+  res.json({
+    object: "list",
+    data: [{ id: modelId, object: "model", created: Math.floor(Date.now() / 1000), owned_by: "personal-claude-code" }],
+  });
+});
+
+app.post("/api/v1/chat/completions", async (req, res) => {
+  const token = extractBearerToken(req);
+  if (!token) {
+    return res.status(401).json({ error: { message: "Missing bearer token", type: "invalid_request_error" } });
+  }
+  const resolved = resolveApiToken(token);
+  if (!resolved) {
+    return res.status(401).json({ error: { message: "Invalid token", type: "invalid_request_error" } });
+  }
+
+  const agent = getAgent(resolved.agentId);
+  if (!agent) {
+    return res.status(404).json({ error: { message: "Agent bound to this token no longer exists", type: "invalid_request_error" } });
+  }
+  // Token is profile-scoped — enforce that the agent belongs to the same profile
+  if (resolved.profileId && agent.profileId !== resolved.profileId) {
+    return res.status(403).json({ error: { message: "Token does not have access to this agent", type: "invalid_request_error" } });
+  }
+
+  const { messages, stream } = req.body || {};
+  const userText = extractLastUserMessage(messages);
+  if (!userText || !userText.trim()) {
+    return res.status(400).json({ error: { message: "messages must contain a user message with non-empty content", type: "invalid_request_error" } });
+  }
+
+  if (agent.status === "busy") {
+    return res.status(409).json({ error: { message: "Agent is busy, try again later", type: "server_error" } });
+  }
+
+  const shouldStream = stream !== false; // default true (AI SDK always streams)
+  const completionId = "chatcmpl-" + crypto.randomUUID().replace(/-/g, "");
+  const created = Math.floor(Date.now() / 1000);
+  const modelId = `claude-agent-${agent.name}`;
+
+  // Collect streamed text from the agent via a listener
+  let accumulatedText = "";
+  let finishEvent = null;
+  let errorEvent = null;
+  let finished = false;
+
+  if (shouldStream) {
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+
+    function sseWrite(payload) {
+      if (res.writableEnded) return;
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+
+    // Send initial role chunk (OpenAI format expects this first)
+    sseWrite({
+      id: completionId,
+      object: "chat.completion.chunk",
+      created,
+      model: modelId,
+      choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+    });
+
+    const listener = (event) => {
+      if (event.type === "text_delta" && typeof event.text === "string") {
+        accumulatedText += event.text;
+        sseWrite({
+          id: completionId,
+          object: "chat.completion.chunk",
+          created,
+          model: modelId,
+          choices: [{ index: 0, delta: { content: event.text }, finish_reason: null }],
+        });
+      } else if (event.type === "done") {
+        finishEvent = event;
+      } else if (event.type === "error") {
+        errorEvent = event;
+      }
+    };
+
+    subscribeAgent(agent.id, listener);
+
+    // If the client disconnects, abort the agent run
+    req.on("close", () => {
+      if (!finished) {
+        try { abortAgent(agent.id); } catch {}
+      }
+    });
+
+    try {
+      await sendMessage(agent.id, userText.trim(), null);
+    } catch (err) {
+      errorEvent = { message: err.message || "Agent error" };
+    } finally {
+      unsubscribeAgent(agent.id, listener);
+      finished = true;
+    }
+
+    // Final chunk with finish_reason
+    if (errorEvent) {
+      sseWrite({
+        id: completionId,
+        object: "chat.completion.chunk",
+        created,
+        model: modelId,
+        choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+        error: { message: errorEvent.message || "Agent error" },
+      });
+    } else {
+      sseWrite({
+        id: completionId,
+        object: "chat.completion.chunk",
+        created,
+        model: modelId,
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      });
+    }
+    res.write("data: [DONE]\n\n");
+    res.end();
+    return;
+  }
+
+  // Non-streaming fallback: collect everything and return a single JSON response
+  const listener = (event) => {
+    if (event.type === "text_delta" && typeof event.text === "string") {
+      accumulatedText += event.text;
+    } else if (event.type === "done") {
+      finishEvent = event;
+    } else if (event.type === "error") {
+      errorEvent = event;
+    }
+  };
+  subscribeAgent(agent.id, listener);
+  req.on("close", () => {
+    if (!finished) {
+      try { abortAgent(agent.id); } catch {}
+    }
+  });
+  try {
+    await sendMessage(agent.id, userText.trim(), null);
+  } catch (err) {
+    errorEvent = { message: err.message || "Agent error" };
+  } finally {
+    unsubscribeAgent(agent.id, listener);
+    finished = true;
+  }
+
+  if (errorEvent) {
+    return res.status(500).json({ error: { message: errorEvent.message || "Agent error", type: "server_error" } });
+  }
+
+  const finalText = (finishEvent && finishEvent.result) || accumulatedText;
+  res.json({
+    id: completionId,
+    object: "chat.completion",
+    created,
+    model: modelId,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: finalText },
+        finish_reason: "stop",
+      },
+    ],
+    usage: (finishEvent && finishEvent.usage) ? {
+      prompt_tokens: finishEvent.usage.input_tokens || 0,
+      completion_tokens: finishEvent.usage.output_tokens || 0,
+      total_tokens: (finishEvent.usage.input_tokens || 0) + (finishEvent.usage.output_tokens || 0),
+    } : undefined,
+  });
+});
+
 // Apply auth guard to all API routes (except auth/profile endpoints above)
 app.use("/api", requireAuth);
 
@@ -327,7 +556,7 @@ try {
     const content = fs.readFileSync(legacyCreds, "utf-8");
     const match = content.match(/https:\/\/([^@]+)@github\.com/);
     if (match) {
-      writeProviders({ github: { token: match[1] } }, null);
+      writeProviders([{ id: crypto.randomUUID(), label: "Default", token: match[1], type: "github" }], null);
     }
   }
 } catch {
@@ -445,15 +674,23 @@ app.post("/api/agents", async (req, res) => {
   }
 });
 
-// List repos for a given provider
+// List repos for a given provider (optional ?accountId= to select specific account)
 app.get("/api/repos/:provider", async (req, res) => {
   const { provider } = req.params;
+  const { accountId } = req.query;
   const profileId = req.profile?.id || null;
+
+  // Resolve the account config: specific account if accountId provided, else default
+  function resolveConfig(providerName) {
+    if (accountId) return getProviderConfigByAccountId(accountId, profileId);
+    return getProviderConfig(providerName, profileId);
+  }
+
   try {
     if (provider === "github") {
-      const token = getProviderToken("github", profileId);
-      if (!token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
-      const result = await githubApi("GET", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member", token);
+      const config = resolveConfig("github");
+      if (!config.token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
+      const result = await githubApi("GET", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member", config.token);
       if (result.status !== 200) return res.status(400).json({ error: "GitHub token is invalid or expired. Update it in Git Settings." });
       return res.json(result.data.map((r) => ({
         full_name: r.full_name, name: r.name, private: r.private,
@@ -462,7 +699,7 @@ app.get("/api/repos/:provider", async (req, res) => {
     }
 
     if (provider === "gitlab") {
-      const config = getProviderConfig("gitlab", profileId);
+      const config = resolveConfig("gitlab");
       if (!config.token) return res.status(400).json({ error: "GitLab token not configured. Set it in Git Settings." });
       const result = await gitlabApi("GET", "/api/v4/projects?membership=true&order_by=updated_at&sort=desc&per_page=100", config.token, config.url);
       if (result.status !== 200) return res.status(400).json({ error: "GitLab token is invalid or expired. Update it in Git Settings." });
@@ -473,7 +710,7 @@ app.get("/api/repos/:provider", async (req, res) => {
     }
 
     if (provider === "azuredevops") {
-      const config = getProviderConfig("azuredevops", profileId);
+      const config = resolveConfig("azuredevops");
       if (!config.token) return res.status(400).json({ error: "Azure DevOps token not configured. Set it in Git Settings." });
       if (!config.organization) return res.status(400).json({ error: "Azure DevOps organization not configured. Set it in Git Settings." });
       const result = await azureDevOpsApi("GET", config.organization, "/_apis/git/repositories?api-version=7.0", config.token);
@@ -509,7 +746,7 @@ app.get("/api/github/repos", async (req, res) => {
 });
 
 app.post("/api/agents/clone", async (req, res) => {
-  const { repoFullName, provider = "github" } = req.body;
+  const { repoFullName, provider = "github", accountId } = req.body;
   const ctx = getProfileContext(req);
   const profileId = ctx.profileId;
   const workspaceRoot = ctx.workspaceRoot;
@@ -526,22 +763,23 @@ app.post("/api/agents/clone", async (req, res) => {
   }
 
   try {
+    // Resolve config: specific account if accountId provided, else default
+    const config = accountId
+      ? getProviderConfigByAccountId(accountId, profileId)
+      : getProviderConfig(provider, profileId);
+
     let cloneUrl;
 
     if (provider === "github") {
-      const token = getProviderToken("github", profileId);
-      if (!token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
-      cloneUrl = `https://${token}@github.com/${repoFullName}.git`;
+      if (!config.token) return res.status(400).json({ error: "GitHub token not configured. Set it in Git Settings." });
+      cloneUrl = `https://${config.token}@github.com/${repoFullName}.git`;
     } else if (provider === "gitlab") {
-      const config = getProviderConfig("gitlab", profileId);
       if (!config.token) return res.status(400).json({ error: "GitLab token not configured. Set it in Git Settings." });
       const host = (config.url || "https://gitlab.com").replace(/^https?:\/\//, "");
       cloneUrl = `https://oauth2:${config.token}@${host}/${repoFullName}.git`;
     } else if (provider === "azuredevops") {
-      const config = getProviderConfig("azuredevops", profileId);
       if (!config.token) return res.status(400).json({ error: "Azure DevOps token not configured. Set it in Git Settings." });
       if (!config.organization) return res.status(400).json({ error: "Azure DevOps organization not configured. Set it in Git Settings." });
-      // repoFullName is "project/repo"
       const [project, repo] = repoFullName.split("/");
       cloneUrl = `https://azuredevops:${config.token}@dev.azure.com/${config.organization}/${project}/_git/${repo}`;
     } else {
@@ -558,6 +796,39 @@ app.post("/api/agents/clone", async (req, res) => {
     try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch {}
     res.status(500).json({ error: err.message || "Failed to clone repository" });
   }
+});
+
+// --- API token management (for the Vercel AI SDK endpoint) ---
+app.get("/api/api-tokens", (req, res) => {
+  const profileId = req.profile?.id || null;
+  res.json(listApiTokens(profileId));
+});
+
+app.post("/api/api-tokens", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const { label, agentId } = req.body || {};
+  if (!label || !agentId) {
+    return res.status(400).json({ error: "label and agentId are required" });
+  }
+  // Validate that the agent exists and belongs to this profile
+  const agent = getAgent(agentId);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+  if (agent.profileId !== profileId) {
+    return res.status(403).json({ error: "Agent does not belong to this profile" });
+  }
+  try {
+    const created = createApiToken(profileId, { label, agentId });
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(400).json({ error: err.message || "Failed to create token" });
+  }
+});
+
+app.delete("/api/api-tokens/:id", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const ok = deleteApiToken(profileId, req.params.id);
+  if (!ok) return res.status(404).json({ error: "Token not found" });
+  res.status(204).end();
 });
 
 app.get("/api/agents", (req, res) => {
@@ -1266,20 +1537,21 @@ app.get("/api/git-config", async (req, res) => {
     gitExec(["config", "--file", gitconfigPath, "--get", "user.email"], "/"),
   ]);
 
-  const providers = readProviders(profileId);
-  const gh = providers.github || {};
-  const gl = providers.gitlab || {};
-  const az = providers.azuredevops || {};
+  const allAccounts = readProviders(profileId);
+
+  // Return flat accounts list (never expose actual tokens)
+  const accounts = allAccounts.map((a) => {
+    const safe = { id: a.id, label: a.label || "", type: a.type, hasToken: !!a.token };
+    if (a.type === "gitlab") safe.url = a.url || "https://gitlab.com";
+    if (a.type === "azuredevops") safe.organization = a.organization || "";
+    return safe;
+  });
 
   res.json({
     name: name || "",
     email: email || "",
-    hasToken: !!(gh.token || gl.token || az.token), // backward compat
-    providers: {
-      github: { hasToken: !!gh.token },
-      gitlab: { hasToken: !!gl.token, url: gl.url || "https://gitlab.com" },
-      azuredevops: { hasToken: !!az.token, organization: az.organization || "" },
-    },
+    hasToken: accounts.some((a) => a.hasToken), // backward compat
+    accounts,
   });
 });
 
@@ -1287,7 +1559,7 @@ app.post("/api/git-config", async (req, res) => {
   const profileId = req.profile?.id || null;
   const gitDir = getGitDir(profileId);
   const gitconfigPath = path.join(gitDir, "gitconfig");
-  const { name, email, token, githubToken, gitlabToken, gitlabUrl, azuredevopsToken, azuredevopsOrg } = req.body;
+  const { name, email, accounts: incomingAccounts } = req.body;
 
   // Ensure gitconfig file exists
   fs.mkdirSync(gitDir, { recursive: true });
@@ -1306,74 +1578,87 @@ app.post("/api/git-config", async (req, res) => {
     );
   }
 
-  // Update provider tokens
-  const providers = readProviders(profileId);
-  const changedProviders = [];
+  // Update accounts if provided
+  const changedTypes = new Set();
 
-  // Backward compat: `token` maps to GitHub
-  const ghToken = githubToken || token;
-  if (ghToken && ghToken.trim()) {
-    if (providers.github?.token !== ghToken.trim()) {
-      changedProviders.push("github");
+  if (Array.isArray(incomingAccounts)) {
+    const existing = readProviders(profileId);
+    const existingById = new Map(existing.map((a) => [a.id, a]));
+    const newList = [];
+
+    for (const incoming of incomingAccounts) {
+      if (incoming.id && existingById.has(incoming.id)) {
+        // Update existing account
+        const old = existingById.get(incoming.id);
+        const updated = { ...old };
+        if (incoming.label !== undefined) updated.label = incoming.label;
+        if (incoming.type !== undefined) updated.type = incoming.type;
+        if (incoming.token && incoming.token.trim()) {
+          if (old.token !== incoming.token.trim()) changedTypes.add(updated.type);
+          updated.token = incoming.token.trim();
+        }
+        if (incoming.url !== undefined && updated.type === "gitlab") {
+          if (old.url !== incoming.url) changedTypes.add("gitlab");
+          updated.url = incoming.url;
+        }
+        if (incoming.organization !== undefined && updated.type === "azuredevops") {
+          if (old.organization !== incoming.organization) changedTypes.add("azuredevops");
+          updated.organization = incoming.organization;
+        }
+        newList.push(updated);
+        existingById.delete(incoming.id);
+      } else {
+        // New account
+        const account = {
+          id: incoming.id || crypto.randomUUID(),
+          label: incoming.label || "Account",
+          token: (incoming.token || "").trim(),
+          type: incoming.type || "github",
+        };
+        if (account.type === "gitlab") account.url = incoming.url || "https://gitlab.com";
+        if (account.type === "azuredevops") account.organization = incoming.organization || "";
+        newList.push(account);
+        if (account.token) changedTypes.add(account.type);
+      }
     }
-    providers.github = { ...providers.github, token: ghToken.trim() };
-  }
-  if (gitlabToken && gitlabToken.trim()) {
-    if (providers.gitlab?.token !== gitlabToken.trim()) {
-      changedProviders.push("gitlab");
+
+    // Any remaining in existingById were deleted
+    for (const deleted of existingById.values()) {
+      if (deleted.token) changedTypes.add(deleted.type);
     }
-    providers.gitlab = { ...providers.gitlab, token: gitlabToken.trim() };
-  }
-  if (gitlabUrl !== undefined) {
-    const newGitlabUrl = gitlabUrl.trim() || "https://gitlab.com";
-    if (providers.gitlab?.url !== newGitlabUrl && !changedProviders.includes("gitlab")) {
-      changedProviders.push("gitlab");
-    }
-    providers.gitlab = { ...providers.gitlab, url: newGitlabUrl };
-  }
-  if (azuredevopsToken && azuredevopsToken.trim()) {
-    if (providers.azuredevops?.token !== azuredevopsToken.trim()) {
-      changedProviders.push("azuredevops");
-    }
-    providers.azuredevops = { ...providers.azuredevops, token: azuredevopsToken.trim() };
-  }
-  if (azuredevopsOrg !== undefined) {
-    const newOrg = azuredevopsOrg.trim();
-    if (providers.azuredevops?.organization !== newOrg && !changedProviders.includes("azuredevops")) {
-      changedProviders.push("azuredevops");
-    }
-    providers.azuredevops = { ...providers.azuredevops, organization: newOrg };
+
+    writeProviders(newList, profileId);
   }
 
-  writeProviders(providers, profileId);
   syncGitCredentials(profileId);
 
   // Update remote URLs in existing workspace repos (fire-and-forget)
-  if (changedProviders.length > 0) {
-    updateRemoteUrls(profileId, changedProviders).catch((err) => {
+  const changed = [...changedTypes];
+  if (changed.length > 0) {
+    updateRemoteUrls(profileId, changed).catch((err) => {
       console.error("[git-config] Failed to update remote URLs:", err.message);
     });
   }
 
-  // Return updated state
+  // Return updated state (same shape as GET /api/git-config)
   const [updatedName, updatedEmail] = await Promise.all([
     gitExec(["config", "--file", gitconfigPath, "--get", "user.name"], "/"),
     gitExec(["config", "--file", gitconfigPath, "--get", "user.email"], "/"),
   ]);
 
-  const gh = providers.github || {};
-  const gl = providers.gitlab || {};
-  const az = providers.azuredevops || {};
+  const allAccounts = readProviders(profileId);
+  const safeAccounts = allAccounts.map((a) => {
+    const safe = { id: a.id, label: a.label || "", type: a.type, hasToken: !!a.token };
+    if (a.type === "gitlab") safe.url = a.url || "https://gitlab.com";
+    if (a.type === "azuredevops") safe.organization = a.organization || "";
+    return safe;
+  });
 
   res.json({
     name: updatedName || "",
     email: updatedEmail || "",
-    hasToken: !!(gh.token || gl.token || az.token),
-    providers: {
-      github: { hasToken: !!gh.token },
-      gitlab: { hasToken: !!gl.token, url: gl.url || "https://gitlab.com" },
-      azuredevops: { hasToken: !!az.token, organization: az.organization || "" },
-    },
+    hasToken: safeAccounts.some((a) => a.hasToken),
+    accounts: safeAccounts,
   });
 });
 

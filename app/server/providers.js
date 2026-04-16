@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import https from "https";
+import crypto from "crypto";
 import { execFile } from "child_process";
 import { getProfilePaths } from "./profiles.js";
 
@@ -14,48 +15,166 @@ export function getGitDir(profileId) {
   return LEGACY_GIT_DIR;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Data model — flat array of accounts                                */
+/*                                                                     */
+/*  providers.json = [                                                 */
+/*    { id, label, token, type: "github" },                           */
+/*    { id, label, token, type: "github" },                           */
+/*    { id, label, token, type: "gitlab", url: "..." },               */
+/*    { id, label, token, type: "azuredevops", organization: "..." }, */
+/*  ]                                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Migrate legacy formats to the flat array.
+ *
+ * Handles two legacy shapes:
+ *  1. Original single-token: { github: { token }, gitlab: { token, url }, ... }
+ *  2. Previous multi-account: { github: { accounts: [...], defaultAccountId }, ... }
+ *
+ * Returns the (possibly migrated) array. The caller persists if needed.
+ */
+function migrateProviders(raw) {
+  // Already the new flat array format
+  if (Array.isArray(raw)) return { accounts: raw, migrated: false };
+
+  // It's an object — legacy format. Convert.
+  const accounts = [];
+
+  for (const type of ["github", "gitlab", "azuredevops"]) {
+    const entry = raw[type];
+    if (!entry) continue;
+
+    if (entry.accounts && Array.isArray(entry.accounts)) {
+      // Previous multi-account format: { accounts: [...], defaultAccountId }
+      for (const a of entry.accounts) {
+        const account = {
+          id: a.id || crypto.randomUUID(),
+          label: a.label || "Default",
+          token: a.token || "",
+          type,
+        };
+        if (type === "gitlab") account.url = a.url || "https://gitlab.com";
+        if (type === "azuredevops") account.organization = a.organization || "";
+        accounts.push(account);
+      }
+    } else if (entry.token) {
+      // Original single-token format: { token, url?, organization? }
+      const account = {
+        id: crypto.randomUUID(),
+        label: "Default",
+        token: entry.token,
+        type,
+      };
+      if (type === "gitlab") account.url = entry.url || "https://gitlab.com";
+      if (type === "azuredevops") account.organization = entry.organization || "";
+      accounts.push(account);
+    }
+  }
+
+  return { accounts, migrated: true };
+}
+
 export function readProviders(profileId) {
   const gitDir = getGitDir(profileId);
   const providersPath = path.join(gitDir, "providers.json");
+  let raw;
   try {
-    return JSON.parse(fs.readFileSync(providersPath, "utf-8"));
+    raw = JSON.parse(fs.readFileSync(providersPath, "utf-8"));
   } catch {
-    return {};
+    return [];
   }
+  const { accounts, migrated } = migrateProviders(raw);
+  if (migrated) {
+    try {
+      fs.writeFileSync(providersPath, JSON.stringify(accounts, null, 2), { mode: 0o600 });
+    } catch { /* best effort */ }
+  }
+  return accounts;
 }
 
-export function writeProviders(providers, profileId) {
+export function writeProviders(accounts, profileId) {
   const gitDir = getGitDir(profileId);
   fs.mkdirSync(gitDir, { recursive: true });
-  fs.writeFileSync(path.join(gitDir, "providers.json"), JSON.stringify(providers, null, 2), { mode: 0o600 });
+  fs.writeFileSync(path.join(gitDir, "providers.json"), JSON.stringify(accounts, null, 2), { mode: 0o600 });
 }
 
-export function getProviderToken(provider, profileId) {
-  const providers = readProviders(profileId);
-  return providers[provider]?.token || null;
+/* ------------------------------------------------------------------ */
+/*  Account accessors                                                  */
+/* ------------------------------------------------------------------ */
+
+/** Get a specific account by ID. */
+export function getAccountById(accountId, profileId) {
+  const accounts = readProviders(profileId);
+  return accounts.find((a) => a.id === accountId) || null;
 }
 
-export function getProviderConfig(provider, profileId) {
-  const providers = readProviders(profileId);
-  return providers[provider] || {};
+/** Get all accounts for a given provider type. */
+export function getAllAccounts(type, profileId) {
+  const accounts = readProviders(profileId);
+  return accounts.filter((a) => a.type === type);
 }
+
+/** Get the first account for a provider type (used as default/fallback). */
+export function getDefaultAccount(type, profileId) {
+  const accounts = getAllAccounts(type, profileId);
+  return accounts[0] || null;
+}
+
+/** Build a backward-compatible config object from an account. */
+function accountToConfig(account) {
+  if (!account) return {};
+  if (account.type === "gitlab") return { token: account.token, url: account.url || "https://gitlab.com" };
+  if (account.type === "azuredevops") return { token: account.token, organization: account.organization || "" };
+  return { token: account.token };
+}
+
+/** Get provider config for a specific account (by ID). */
+export function getProviderConfigByAccountId(accountId, profileId) {
+  return accountToConfig(getAccountById(accountId, profileId));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Backward-compatible accessors (use first account of the type)      */
+/* ------------------------------------------------------------------ */
+
+export function getProviderToken(type, profileId) {
+  const account = getDefaultAccount(type, profileId);
+  return account?.token || null;
+}
+
+export function getProviderConfig(type, profileId) {
+  return accountToConfig(getDefaultAccount(type, profileId));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Git credentials sync (writes ALL accounts)                         */
+/* ------------------------------------------------------------------ */
 
 export function syncGitCredentials(profileId) {
   const gitDir = getGitDir(profileId);
-  const providers = readProviders(profileId);
+  const accounts = readProviders(profileId);
   const lines = [];
-  if (providers.github?.token) {
-    lines.push(`https://${providers.github.token}@github.com`);
+
+  for (const account of accounts) {
+    if (!account.token) continue;
+    if (account.type === "github") {
+      lines.push(`https://${account.token}@github.com`);
+    } else if (account.type === "gitlab") {
+      const host = (account.url || "https://gitlab.com").replace(/^https?:\/\//, "");
+      lines.push(`https://oauth2:${account.token}@${host}`);
+    } else if (account.type === "azuredevops") {
+      lines.push(`https://azuredevops:${account.token}@dev.azure.com`);
+    }
   }
-  if (providers.gitlab?.token) {
-    const host = (providers.gitlab.url || "https://gitlab.com").replace(/^https?:\/\//, "");
-    lines.push(`https://oauth2:${providers.gitlab.token}@${host}`);
-  }
-  if (providers.azuredevops?.token) {
-    lines.push(`https://azuredevops:${providers.azuredevops.token}@dev.azure.com`);
-  }
+
   fs.writeFileSync(path.join(gitDir, "git-credentials"), lines.join("\n") + (lines.length ? "\n" : ""), { mode: 0o600 });
 }
+
+/* ------------------------------------------------------------------ */
+/*  HTTP / API helpers (unchanged)                                     */
+/* ------------------------------------------------------------------ */
 
 export function apiRequest(method, hostname, apiPath, headers, body) {
   return new Promise((resolve, reject) => {
@@ -147,86 +266,112 @@ export async function configureLocalGit(dir, profileId) {
   if (globalEmail) await execPromise("git", ["config", "user.email", globalEmail], { cwd: dir });
 }
 
+/* ------------------------------------------------------------------ */
+/*  Remote URL parsing — checks all GitLab account URLs                */
+/* ------------------------------------------------------------------ */
+
 export function parseRemoteUrl(remoteUrl, profileId) {
   let m;
   m = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
   if (m) return { provider: "github", owner: m[1], repo: m[2] };
   m = remoteUrl.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/.]+)/);
   if (m) return { provider: "azuredevops", org: m[1], project: m[2], repo: m[3] };
-  const glConfig = getProviderConfig("gitlab", profileId);
-  const glHost = (glConfig.url || "https://gitlab.com").replace(/^https?:\/\//, "").replace(/\/$/, "");
-  const glRe = new RegExp(glHost.replace(/\./g, "\\.") + "[:/]([^/]+)/([^/.]+)");
-  m = remoteUrl.match(glRe);
-  if (m) return { provider: "gitlab", owner: m[1], repo: m[2], host: glHost };
-  m = remoteUrl.match(/gitlab\.com[:/]([^/]+)\/([^/.]+)/);
-  if (m) return { provider: "gitlab", owner: m[1], repo: m[2], host: "gitlab.com" };
+
+  // Check all GitLab accounts for URL matches
+  const glAccounts = getAllAccounts("gitlab", profileId);
+  const checkedHosts = new Set();
+  for (const account of glAccounts) {
+    const glHost = (account.url || "https://gitlab.com").replace(/^https?:\/\//, "").replace(/\/$/, "");
+    if (checkedHosts.has(glHost)) continue;
+    checkedHosts.add(glHost);
+    const glRe = new RegExp(glHost.replace(/\./g, "\\.") + "[:/]([^/]+)/([^/.]+)");
+    m = remoteUrl.match(glRe);
+    if (m) return { provider: "gitlab", owner: m[1], repo: m[2], host: glHost };
+  }
+
+  // Fallback to gitlab.com
+  if (!checkedHosts.has("gitlab.com")) {
+    m = remoteUrl.match(/gitlab\.com[:/]([^/]+)\/([^/.]+)/);
+    if (m) return { provider: "gitlab", owner: m[1], repo: m[2], host: "gitlab.com" };
+  }
   return null;
 }
+
+/* ------------------------------------------------------------------ */
+/*  PR/MR info — tries all accounts for the provider                   */
+/* ------------------------------------------------------------------ */
 
 export async function fetchPrInfo(remote, branch, profileId) {
   if (remote.provider === "github") {
-    const token = getProviderToken("github", profileId);
-    if (!token) return null;
-    const result = await githubApi("GET", `/repos/${remote.owner}/${remote.repo}/pulls?state=open&head=${remote.owner}:${branch}`, token);
-    if (result.status === 200 && result.data.length > 0) {
-      const pr = result.data[0];
-      return { provider: "github", number: pr.number, title: pr.title, url: pr.html_url, owner: remote.owner, repo: remote.repo };
+    const accounts = getAllAccounts("github", profileId);
+    for (const account of accounts) {
+      if (!account.token) continue;
+      try {
+        const result = await githubApi("GET", `/repos/${remote.owner}/${remote.repo}/pulls?state=open&head=${remote.owner}:${branch}`, account.token);
+        if (result.status === 200 && result.data.length > 0) {
+          const pr = result.data[0];
+          return { provider: "github", number: pr.number, title: pr.title, url: pr.html_url, owner: remote.owner, repo: remote.repo };
+        }
+      } catch { /* try next account */ }
     }
   } else if (remote.provider === "gitlab") {
-    const config = getProviderConfig("gitlab", profileId);
-    if (!config.token) return null;
-    const projectPath = encodeURIComponent(`${remote.owner}/${remote.repo}`);
-    const result = await gitlabApi("GET", `/api/v4/projects/${projectPath}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`, config.token, config.url);
-    if (result.status === 200 && result.data.length > 0) {
-      const mr = result.data[0];
-      return { provider: "gitlab", number: mr.iid, title: mr.title, url: mr.web_url, projectPath };
+    const accounts = getAllAccounts("gitlab", profileId);
+    for (const account of accounts) {
+      if (!account.token) continue;
+      try {
+        const projectPath = encodeURIComponent(`${remote.owner}/${remote.repo}`);
+        const result = await gitlabApi("GET", `/api/v4/projects/${projectPath}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`, account.token, account.url);
+        if (result.status === 200 && result.data.length > 0) {
+          const mr = result.data[0];
+          return { provider: "gitlab", number: mr.iid, title: mr.title, url: mr.web_url, projectPath };
+        }
+      } catch { /* try next account */ }
     }
   } else if (remote.provider === "azuredevops") {
-    const config = getProviderConfig("azuredevops", profileId);
-    if (!config.token || !config.organization) return null;
-    const result = await azureDevOpsApi("GET", config.organization,
-      `/${remote.project}/_apis/git/repositories/${remote.repo}/pullrequests?searchCriteria.sourceRefName=refs/heads/${encodeURIComponent(branch)}&searchCriteria.status=active&api-version=7.0`,
-      config.token);
-    if (result.status === 200 && result.data.value?.length > 0) {
-      const pr = result.data.value[0];
-      return {
-        provider: "azuredevops", number: pr.pullRequestId, title: pr.title,
-        url: `https://dev.azure.com/${config.organization}/${remote.project}/_git/${remote.repo}/pullrequest/${pr.pullRequestId}`,
-        org: config.organization, project: remote.project, repo: remote.repo,
-      };
+    const accounts = getAllAccounts("azuredevops", profileId);
+    for (const account of accounts) {
+      if (!account.token || !account.organization) continue;
+      try {
+        const result = await azureDevOpsApi("GET", account.organization,
+          `/${remote.project}/_apis/git/repositories/${remote.repo}/pullrequests?searchCriteria.sourceRefName=refs/heads/${encodeURIComponent(branch)}&searchCriteria.status=active&api-version=7.0`,
+          account.token);
+        if (result.status === 200 && result.data.value?.length > 0) {
+          const pr = result.data.value[0];
+          return {
+            provider: "azuredevops", number: pr.pullRequestId, title: pr.title,
+            url: `https://dev.azure.com/${account.organization}/${remote.project}/_git/${remote.repo}/pullrequest/${pr.pullRequestId}`,
+            org: account.organization, project: remote.project, repo: remote.repo,
+          };
+        }
+      } catch { /* try next account */ }
     }
   }
   return null;
 }
 
-// Helper to build clone URLs for any provider
-export function buildCloneUrl(provider, repoFullName, profileId) {
-  if (provider === "github") {
-    const token = getProviderToken("github", profileId);
-    return `https://${token}@github.com/${repoFullName}.git`;
-  } else if (provider === "gitlab") {
-    const config = getProviderConfig("gitlab", profileId);
+/* ------------------------------------------------------------------ */
+/*  Clone URL builder — supports optional accountId                    */
+/* ------------------------------------------------------------------ */
+
+export function buildCloneUrl(type, repoFullName, profileId, accountId) {
+  const config = accountId
+    ? getProviderConfigByAccountId(accountId, profileId)
+    : getProviderConfig(type, profileId);
+
+  if (type === "github") {
+    return `https://${config.token}@github.com/${repoFullName}.git`;
+  } else if (type === "gitlab") {
     const host = (config.url || "https://gitlab.com").replace(/^https?:\/\//, "");
     return `https://oauth2:${config.token}@${host}/${repoFullName}.git`;
-  } else if (provider === "azuredevops") {
-    const config = getProviderConfig("azuredevops", profileId);
+  } else if (type === "azuredevops") {
     const [project, repo] = repoFullName.split("/");
     return `https://azuredevops:${config.token}@dev.azure.com/${config.organization}/${project}/_git/${repo}`;
   }
-  throw new Error(`Unknown provider: ${provider}`);
+  throw new Error(`Unknown provider: ${type}`);
 }
 
 /**
  * Update remote origin URLs in all workspace repos after a token change.
- * Scans the workspace root for git repos, parses each remote URL to detect
- * the provider, and if it matches a changed provider, rebuilds the URL with
- * the current token via buildCloneUrl().
- *
- * Linked worktrees are skipped because they share the main repo's remote config.
- * This function is best-effort: errors for individual repos are silently ignored.
- *
- * @param {string|null} profileId - The profile ID (or null for legacy mode)
- * @param {string[]} changedProviders - Provider names that changed, e.g. ["github"]
  */
 export async function updateRemoteUrls(profileId, changedProviders) {
   if (!changedProviders || changedProviders.length === 0) return;
@@ -256,33 +401,25 @@ export async function updateRemoteUrls(profileId, changedProviders) {
   await Promise.all(
     dirs.map(async (dir) => {
       try {
-        // Skip linked worktrees (they have .git as a file, not a directory).
-        // Inlined here to avoid circular import from worktrees.js.
         const gitPath = path.join(dir, ".git");
         let stat;
         try {
           stat = await fs.promises.stat(gitPath);
         } catch {
-          return; // no .git entry, not a git repo
+          return;
         }
-        if (stat.isFile()) return; // linked worktree
+        if (stat.isFile()) return;
 
-        // Get current remote origin URL
         const remoteUrl = await gitExec(["remote", "get-url", "origin"], dir);
         if (!remoteUrl) return;
-
-        // Only update HTTPS remotes (SSH remotes don't embed tokens)
         if (!remoteUrl.startsWith("https://")) return;
 
-        // Detect provider from URL
         const remote = parseRemoteUrl(remoteUrl, profileId);
         if (!remote || !changedSet.has(remote.provider)) return;
 
-        // Ensure the provider has a token before rebuilding URL
         const token = getProviderToken(remote.provider, profileId);
         if (!token) return;
 
-        // Build repoFullName from parsed remote info
         let repoFullName;
         if (remote.provider === "github") {
           repoFullName = `${remote.owner}/${remote.repo}`;
@@ -294,13 +431,10 @@ export async function updateRemoteUrls(profileId, changedProviders) {
           return;
         }
 
-        // Build new URL with the updated token
         const newUrl = buildCloneUrl(remote.provider, repoFullName, profileId);
-
-        // Update the remote (local-only operation, fast)
         await gitExec(["remote", "set-url", "origin", newUrl], dir);
       } catch {
-        // Best effort: silently skip repos that fail
+        // Best effort
       }
     })
   );
