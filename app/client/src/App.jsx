@@ -1098,7 +1098,7 @@ export default function App() {
                               )}
                               {msg.timestamp && (
                                 <div className="text-[10px] text-muted-foreground/60 text-right mr-1">
-                                  {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                  {new Date(msg.timestamp).toLocaleDateString([], { hour: "2-digit", minute: "2-digit" })}
                                 </div>
                               )}
                             </div>
