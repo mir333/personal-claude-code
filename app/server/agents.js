@@ -6,7 +6,7 @@ import { recordUsage } from "./usage.js";
 
 const agents = new Map();
 
-export function createAgent(name, workingDirectory, profileId) {
+export function createAgent(name, workingDirectory, profileId, continueSession = false) {
   const id = uuidv4();
   const agent = {
     id,
@@ -16,6 +16,7 @@ export function createAgent(name, workingDirectory, profileId) {
     status: "idle",
     history: [],
     sessionId: null,
+    continueSession,            // When true, first message uses SDK options.continue to recover previous session
     abortController: null,
     textBuffer: "",
     interactiveQuestions: true,
@@ -38,7 +39,7 @@ export function listAgents(profileId) {
   if (profileId) {
     all = all.filter((a) => a.profileId === profileId);
   }
-  return all.map(({ id, name, workingDirectory, status, interactiveQuestions, profileId: pid, model }) => ({
+  return all.map(({ id, name, workingDirectory, status, interactiveQuestions, profileId: pid, model, continueSession }) => ({
     id,
     name,
     workingDirectory,
@@ -46,6 +47,7 @@ export function listAgents(profileId) {
     interactiveQuestions,
     profileId: pid,
     model: model || null,
+    continueSession: continueSession || false,
   }));
 }
 
@@ -80,6 +82,7 @@ export function clearContext(id) {
   if (!agent) return false;
   agent.sessionId = null;
   agent.history = [];
+  agent.continueSession = false;
   appendEntry(agent.workingDirectory, {
     type: "context_cleared",
     timestamp: Date.now(),
@@ -92,6 +95,7 @@ export function clearHistory(id) {
   if (!agent) return false;
   agent.sessionId = null;
   agent.history = [];
+  agent.continueSession = false;
   clearConversation(agent.workingDirectory);
   return true;
 }
@@ -242,6 +246,12 @@ export async function sendMessage(id, text, attachments = null) {
 
     if (agent.sessionId) {
       options.resume = agent.sessionId;
+    } else if (agent.continueSession) {
+      // Recover the most recent SDK session for this working directory.
+      // The SDK persists sessions to ~/.claude/projects/ and options.continue
+      // tells it to load and resume the latest one automatically.
+      options.continue = true;
+      agent.continueSession = false; // Only on the first message; subsequent ones use sessionId
     }
 
     // Build prompt: use content blocks (AsyncIterable<SDKUserMessage>) when

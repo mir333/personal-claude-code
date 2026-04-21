@@ -24,6 +24,7 @@ import {
   unsubscribeAgent,
   getBufferedEvents,
 } from "./agents.js";
+import { loadConversation } from "./storage.js";
 import { getUsageStats } from "./usage.js";
 import {
   spawnTerminal,
@@ -643,6 +644,24 @@ function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
+/** Check if a conversation has user messages after the last context_cleared event */
+function hasRecoverableHistory(entries) {
+  if (!entries || entries.length === 0) return false;
+  // Find the index of the last context_cleared event
+  let lastClearIdx = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].type === "context_cleared") {
+      lastClearIdx = i;
+      break;
+    }
+  }
+  // Check if there are any user messages after the last clear
+  for (let i = lastClearIdx + 1; i < entries.length; i++) {
+    if (entries[i].type === "user") return true;
+  }
+  return false;
+}
+
 // REST API
 app.post("/api/agents", async (req, res) => {
   const { name, workingDirectory, localOnly, provider } = req.body;
@@ -661,7 +680,13 @@ app.post("/api/agents", async (req, res) => {
       return res.status(400).json({ error: `workingDirectory must be a subfolder of ${workspaceRoot}` });
     }
     fs.mkdirSync(normalized, { recursive: true });
-    const agent = createAgent(name, normalized, profileId);
+
+    // Check if there is recoverable conversation history from a previous session.
+    // If so, the agent will use the SDK's options.continue to resume automatically.
+    const existingConvo = loadConversation(normalized);
+    const continueSession = hasRecoverableHistory(existingConvo);
+
+    const agent = createAgent(name, normalized, profileId, continueSession);
     return res.status(201).json(agent);
   }
 

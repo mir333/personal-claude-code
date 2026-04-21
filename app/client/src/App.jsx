@@ -204,19 +204,14 @@ export default function App() {
   );
 
   const handleServerRestart = useCallback(() => {
-    setConversations((prev) => {
-      const next = {};
-      for (const [agentId, data] of Object.entries(prev)) {
-        const entries = data?.entries || [];
-        if (entries.length > 0 && entries[entries.length - 1].type !== "context_cleared") {
-          next[agentId] = { ...data, entries: [...entries, { type: "context_cleared", timestamp: Date.now() }], total: (data?.total || 0) + 1 };
-        } else {
-          next[agentId] = data;
-        }
-      }
-      return next;
-    });
-  }, []);
+    // Server restarted — previous in-memory agents are gone.
+    // Don't inject "context_cleared" dividers because new agents created
+    // for existing workspaces will automatically recover the previous SDK
+    // session via options.continue. Refetch the agent list so the UI
+    // picks up the fresh state; conversation history from disk is loaded
+    // when the user selects an agent.
+    fetchAgents();
+  }, [fetchAgents]);
 
   const { send, connected, reconnect } = useWebSocket(handleWsMessage, handleServerRestart, () => reconnectHandlerRef.current?.());
 
@@ -282,10 +277,16 @@ export default function App() {
       if (conv[i].type === "context_cleared") { lastClearIdx = i; break; }
     }
     for (let i = conv.length - 1; i > lastClearIdx; i--) {
-      if (conv[i].type === "stats" && conv[i].usage) {
-        const u = conv[i].usage;
-        if (u.contextWindow) {
-          return { contextWindow: u.contextWindow, used: (u.input_tokens || 0) + (u.output_tokens || 0) };
+      if (conv[i].type === "stats") {
+        // contextWindow lives in modelUsage (per-model), not in usage (overall session)
+        const mu = conv[i].modelUsage;
+        if (mu) {
+          const models = Object.values(mu);
+          const cw = models.find(m => m.contextWindow)?.contextWindow;
+          if (cw) {
+            const u = conv[i].usage || {};
+            return { contextWindow: cw, used: (u.input_tokens || 0) + (u.output_tokens || 0) };
+          }
         }
       }
     }
