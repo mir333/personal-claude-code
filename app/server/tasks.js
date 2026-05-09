@@ -236,6 +236,7 @@ export function createTask(profileId, config) {
     model: config.model || null,
     emails,
     webhookToken: null,
+    webhookBaseUrl: null,
     createdAt: now,
     updatedAt: now,
     lastRunAt: null,
@@ -245,6 +246,7 @@ export function createTask(profileId, config) {
   // Auto-generate webhook token if emails are configured (needed for public summary URL)
   if (task.emails.length > 0) {
     task.webhookToken = crypto.randomBytes(32).toString("hex");
+    if (config.webhookBaseUrl) task.webhookBaseUrl = config.webhookBaseUrl;
   }
   tasks.set(id, task);
   persistTasks(profileId);
@@ -287,7 +289,11 @@ export function updateTask(taskId, updates) {
     // Auto-generate webhook token if emails are set and no token exists
     if (task.emails.length > 0 && !task.webhookToken) {
       task.webhookToken = crypto.randomBytes(32).toString("hex");
+      if (updates.webhookBaseUrl) task.webhookBaseUrl = updates.webhookBaseUrl;
     }
+  }
+  if (updates.webhookBaseUrl && task.webhookToken) {
+    task.webhookBaseUrl = updates.webhookBaseUrl;
   }
   task.updatedAt = Date.now();
 
@@ -327,10 +333,11 @@ export function toggleTask(taskId, enabled) {
   return task;
 }
 
-export function generateWebhookToken(taskId) {
+export function generateWebhookToken(taskId, baseUrl) {
   const task = tasks.get(taskId);
   if (!task) return null;
   task.webhookToken = crypto.randomBytes(32).toString("hex");
+  if (baseUrl) task.webhookBaseUrl = baseUrl;
   task.updatedAt = Date.now();
   tasks.set(taskId, task);
   persistTasks(task.profileId);
@@ -341,6 +348,7 @@ export function revokeWebhookToken(taskId) {
   const task = tasks.get(taskId);
   if (!task) return false;
   task.webhookToken = null;
+  task.webhookBaseUrl = null;
   task.updatedAt = Date.now();
   tasks.set(taskId, task);
   persistTasks(task.profileId);

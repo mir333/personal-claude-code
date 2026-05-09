@@ -2034,7 +2034,8 @@ app.post("/api/tasks", (req, res) => {
     return res.status(400).json({ error: "workingDirectory must be within the workspace" });
   }
 
-  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: prompt.trim(), model: model || null, emails: emails || [] });
+  const webhookBaseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
+  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: prompt.trim(), model: model || null, emails: emails || [], webhookBaseUrl });
   res.status(201).json(task);
 });
 
@@ -2068,7 +2069,7 @@ app.put("/api/tasks/:id", (req, res) => {
     }
   }
 
-  const updated = updateTaskData(req.params.id, req.body);
+  const updated = updateTaskData(req.params.id, { ...req.body, webhookBaseUrl: `${BASE_URL_PROTOCOL}://${req.get("host")}` });
   res.json({ ...updated, running: isRunning(updated.id) });
 });
 
@@ -2170,8 +2171,9 @@ app.post("/api/tasks/validate-cron", (req, res) => {
 app.post("/api/tasks/:id/webhook-token", (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "Task not found" });
-  const token = generateWebhookToken(req.params.id);
-  const webhookUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}/api/webhooks/tasks/${req.params.id}/${token}`;
+  const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
+  const token = generateWebhookToken(req.params.id, baseUrl);
+  const webhookUrl = `${baseUrl}/api/webhooks/tasks/${req.params.id}/${token}`;
   res.json({ webhookToken: token, webhookUrl });
 });
 
@@ -2432,10 +2434,12 @@ onRunComplete(async ({ taskId, runId, task, runEntry }) => {
   try {
     if (!task.emails || task.emails.length === 0) return;
     if (!task.webhookToken) return; // Need webhook token for public URL
+    if (!task.webhookBaseUrl) {
+      console.warn(`[email] No webhookBaseUrl stored for task "${task.name}", skipping email`);
+      return;
+    }
 
-    const host = process.env.BASE_URL_HOST || `localhost:${PORT}`;
-    const baseUrl = `${BASE_URL_PROTOCOL}://${host}`;
-    const summaryUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${task.webhookToken}/runs/${runId}/summary`;
+    const summaryUrl = `${task.webhookBaseUrl}/api/webhooks/tasks/${taskId}/${task.webhookToken}/runs/${runId}/summary`;
 
     await sendTaskCompletionEmail(task.profileId, task, runEntry, summaryUrl);
   } catch (err) {

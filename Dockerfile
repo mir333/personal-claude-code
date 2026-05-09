@@ -1,4 +1,4 @@
-FROM node:20
+FROM node:22
 
 ARG TZ
 ENV TZ="$TZ"
@@ -84,9 +84,6 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 
 # Install Claude
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
-
-# Install Claude Agent SDK globally for the web UI
-RUN npm install -g @anthropic-ai/claude-agent-sdk
 
 # Copy and build web UI app
 COPY --chown=node:node app/ /app/
