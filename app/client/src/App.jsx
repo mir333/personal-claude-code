@@ -4,6 +4,7 @@ import { Send, Square, Trash2, Eraser, Menu, TerminalSquare, FileCode, MessageCi
 import Sidebar from "./components/Sidebar.jsx";
 import ToolCallCard from "./components/ToolCallCard.jsx";
 import ErrorCard from "./components/ErrorCard.jsx";
+import ThinkingCard from "./components/ThinkingCard.jsx";
 import QuestionCard from "./components/QuestionCard.jsx";
 import Markdown from "./components/Markdown.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
@@ -181,6 +182,11 @@ export default function App() {
           const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
           return { ...prev, [agentId]: { ...data, entries: [...data.entries, { type: "tool_result", toolUseId: rest.toolUseId, output: rest.output }], total: data.total + 1 } };
         });
+      } else if (type === "thinking") {
+        setConversations((prev) => {
+          const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
+          return { ...prev, [agentId]: { ...data, entries: [...data.entries, { type: "thinking", text: rest.text }], total: data.total + 1 } };
+        });
       } else if (type === "done") {
         setConversations((prev) => {
           const data = prev[agentId] || { entries: [], total: 0, hasMore: false };
@@ -276,9 +282,9 @@ export default function App() {
       } else if (msg.type === "tool_result") {
         // skip – looked up by toolUseId when rendering
         continue;
-      } else if (inToolRun && msg.type === "assistant_stream") {
-        // Assistant text mid-run: close current grid, emit text, prepare for
-        // a new grid if more tool calls follow.
+      } else if (inToolRun && (msg.type === "assistant_stream" || msg.type === "thinking")) {
+        // Assistant text or thinking mid-run: close current grid, emit it,
+        // prepare for a new grid if more tool calls follow.
         toolGroup = null;
         groups.push({ type: "single", msg });
         // inToolRun stays true so the next tool_call starts a fresh grid
@@ -1156,6 +1162,9 @@ export default function App() {
                             </div>
                           );
                         })()}
+                        {msg.type === "thinking" && (
+                          <ThinkingCard text={msg.text} />
+                        )}
                         {msg.type === "assistant_stream" && (
                           <div className="group/msg relative max-w-full md:max-w-3/4 bg-card border border-border rounded-lg px-4 py-2">
                             <button

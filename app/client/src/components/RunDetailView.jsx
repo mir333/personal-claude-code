@@ -5,6 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog } from "@/components/ui/dialog";
 import ToolCallCard from "./ToolCallCard.jsx";
 import ErrorCard from "./ErrorCard.jsx";
+import ThinkingCard from "./ThinkingCard.jsx";
 import Markdown from "./Markdown.jsx";
 import { formatDuration } from "@/lib/cron";
 
@@ -72,7 +73,7 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
         toolGroup.msgs.push(msg);
       } else if (msg.type === "tool_result") {
         continue;
-      } else if (inToolRun && msg.type === "assistant_stream") {
+      } else if (inToolRun && (msg.type === "assistant_stream" || msg.type === "thinking")) {
         toolGroup = null;
         groups.push({ type: "single", msg });
       } else {
@@ -213,6 +214,9 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
                 <div className="max-w-lg bg-primary text-primary-foreground rounded-lg px-4 py-2 w-fit ml-auto">
                   {msg.text}
                 </div>
+              )}
+              {msg.type === "thinking" && (
+                <ThinkingCard text={msg.text} />
               )}
               {msg.type === "assistant_stream" && (
                 <div className="max-w-3/4 bg-card border border-border rounded-lg px-4 py-2">

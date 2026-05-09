@@ -7,6 +7,28 @@ import { loadEnvVarsForAgent } from "./envVars.js";
 
 const agents = new Map();
 
+/**
+ * Strip <thinking>...</thinking> blocks from text, returning the clean text.
+ */
+const THINKING_RE = /<thinking>[\s\S]*?<\/thinking>\s*/g;
+function stripThinking(text) {
+  return text.replace(THINKING_RE, "");
+}
+
+/**
+ * Extract all <thinking>...</thinking> blocks from text as an array of strings.
+ */
+const THINKING_EXTRACT_RE = /<thinking>([\s\S]*?)<\/thinking>/g;
+function extractThinking(text) {
+  const blocks = [];
+  let m;
+  while ((m = THINKING_EXTRACT_RE.exec(text)) !== null) {
+    const content = m[1].trim();
+    if (content) blocks.push(content);
+  }
+  return blocks;
+}
+
 export function createAgent(name, workingDirectory, profileId, continueSession = false) {
   const id = uuidv4();
   const agent = {
@@ -219,6 +241,8 @@ export async function sendMessage(id, text, attachments = null) {
   agent.eventIndex = 0;
   agent.history.push({ role: "user", content: text, timestamp: Date.now() });
   agent.textBuffer = "";
+  agent._emittedLength = 0;
+  agent._thinkingScanned = 0;
 
   function emit(event) {
     if (!event) return;
@@ -397,7 +421,34 @@ export async function sendMessage(id, text, attachments = null) {
         const event = message.event;
         if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
           agent.textBuffer += event.delta.text;
-          emit({ type: "text_delta", text: event.delta.text });
+
+          // Detect <thinking> blocks and emit them separately as collapsible
+          // cards instead of inline text.  We buffer text while inside a
+          // thinking tag and only emit clean text outside of them.
+          const buf = agent.textBuffer;
+          const openIdx = buf.lastIndexOf("<thinking>");
+          const closeIdx = buf.lastIndexOf("</thinking>");
+          const insideThinking = openIdx >= 0 && (closeIdx < 0 || closeIdx < openIdx);
+
+          if (!insideThinking) {
+            // All thinking blocks (if any) are closed.
+            // Emit any newly completed thinking blocks as separate events.
+            const newThinking = extractThinking(buf.slice(agent._thinkingScanned || 0));
+            for (const block of newThinking) {
+              const entry = { type: "thinking", text: block };
+              appendEntry(agent.workingDirectory, entry);
+              emit(entry);
+            }
+            agent._thinkingScanned = buf.length;
+
+            // Emit only the clean (non-thinking) text delta.
+            const clean = stripThinking(buf);
+            const alreadyEmitted = agent._emittedLength || 0;
+            const newText = clean.slice(alreadyEmitted);
+            if (newText) emit({ type: "text_delta", text: newText });
+            agent._emittedLength = clean.length;
+          }
+          // else: inside an open thinking block — hold back until it closes
         }
         // message_start carries the input_tokens for this API turn, which equals
         // the full conversation context sent to the model.  Emit it so the client
@@ -467,14 +518,16 @@ export async function sendMessage(id, text, attachments = null) {
 
         agent.history.push({
           role: "assistant",
-          content: resultText,
+          content: stripThinking(resultText),
           timestamp: Date.now(),
         });
 
         // Flush accumulated text buffer as a single assistant entry
         if (agent.textBuffer) {
-          appendEntry(agent.workingDirectory, { type: "assistant_stream", text: agent.textBuffer });
+          appendEntry(agent.workingDirectory, { type: "assistant_stream", text: stripThinking(agent.textBuffer) });
           agent.textBuffer = "";
+          agent._emittedLength = 0;
+          agent._thinkingScanned = 0;
         }
 
         // Capture context window size from the result for future reference
@@ -526,8 +579,10 @@ export async function sendMessage(id, text, attachments = null) {
     }
     // AbortError: agent was stopped by user — flush any buffered text and emit done
     if (agent.textBuffer) {
-      appendEntry(agent.workingDirectory, { type: "assistant_stream", text: agent.textBuffer });
+      appendEntry(agent.workingDirectory, { type: "assistant_stream", text: stripThinking(agent.textBuffer) });
       agent.textBuffer = "";
+      agent._emittedLength = 0;
+      agent._thinkingScanned = 0;
     }
     appendEntry(agent.workingDirectory, { type: "stats", cost: null, usage: null, modelUsage: null, numTurns: 0, durationMs: 0 });
     emit({ type: "done", result: "", cost: null, usage: null, modelUsage: null, numTurns: 0, durationMs: 0 });
