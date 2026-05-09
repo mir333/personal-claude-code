@@ -1068,6 +1068,8 @@ function ResendTab() {
   const [configured, setConfigured] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [token, setToken] = useState("");
+  const [from, setFrom] = useState("");
+  const [savedFrom, setSavedFrom] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -1078,6 +1080,8 @@ function ResendTab() {
       if (res.ok) {
         const data = await res.json();
         setConfigured(data.configured);
+        setSavedFrom(data.from || "");
+        setFrom(data.from || "");
       }
     } catch {
       // ignore
@@ -1091,13 +1095,21 @@ function ResendTab() {
   async function handleSave() {
     setError(null);
     setSuccess(null);
-    if (!token.trim()) { setError("API token is required"); return; }
+    const tokenTrim = token.trim();
+    const fromTrim = from.trim();
+    if (!configured && !tokenTrim) { setError("API token is required"); return; }
+
+    const body = {};
+    if (tokenTrim) body.token = tokenTrim;
+    if (fromTrim !== savedFrom) body.from = fromTrim;
+    if (Object.keys(body).length === 0) { setError("Nothing to save"); return; }
+
     setSaving(true);
     try {
       const res = await fetch("/api/resend-config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token.trim() }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -1105,7 +1117,7 @@ function ResendTab() {
         return;
       }
       setToken("");
-      setSuccess("Resend API token saved successfully");
+      setSuccess("Resend settings saved successfully");
       reload();
     } catch (err) {
       setError(err.message || "Failed to save");
@@ -1118,6 +1130,8 @@ function ResendTab() {
     try {
       await fetch("/api/resend-config", { method: "DELETE" });
       setSuccess(null);
+      setFrom("");
+      setSavedFrom("");
       reload();
     } catch {
       // ignore
@@ -1135,7 +1149,7 @@ function ResendTab() {
         email addresses configured, a summary link is sent after each run completes.
       </p>
 
-      <div className="space-y-1.5 p-2.5 rounded-md border border-border">
+      <div className="space-y-2 p-2.5 rounded-md border border-border">
         <div>
           <label className="text-xs text-muted-foreground">API Token</label>
           <input
@@ -1152,11 +1166,26 @@ function ResendTab() {
             </a>
           </p>
         </div>
+        <div>
+          <label className="text-xs text-muted-foreground">From address</label>
+          <input
+            type="text"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className={inputClass}
+            placeholder="Claude Tasks <notify@yourdomain.com>"
+          />
+          <p className="text-[11px] text-muted-foreground/70 mt-1 leading-tight">
+            Must use a domain you've verified in Resend. Leave blank to use the
+            default sandbox sender (<code>onboarding@resend.dev</code>), which only
+            delivers to your own Resend account email.
+          </p>
+        </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
         {success && <p className="text-xs text-green-600">{success}</p>}
         <Button variant="outline" size="sm" className="w-full" onClick={handleSave} disabled={saving}>
           {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Key className="h-3 w-3 mr-1" />}
-          {configured ? "Update token" : "Save token"}
+          {configured ? "Update settings" : "Save settings"}
         </Button>
       </div>
 
@@ -1166,19 +1195,19 @@ function ResendTab() {
         </div>
       ) : configured ? (
         <div className="flex items-center justify-between p-2 rounded-md border border-border">
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <div className="text-sm font-medium flex items-center gap-1.5">
               <Check className="h-3.5 w-3.5 text-green-500" />
               Token configured
             </div>
-            <div className="text-[11px] text-muted-foreground">
-              Email notifications are enabled for tasks with email addresses.
+            <div className="text-[11px] text-muted-foreground truncate">
+              From: {savedFrom || <span className="italic">onboarding@resend.dev (default)</span>}
             </div>
           </div>
           <button
             onClick={handleDelete}
-            className="p-1 text-muted-foreground hover:text-destructive"
-            title="Remove token"
+            className="p-1 text-muted-foreground hover:text-destructive shrink-0"
+            title="Remove configuration"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>

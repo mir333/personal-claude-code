@@ -27,7 +27,7 @@ export function spawnTerminal(agentId, workingDirectory) {
   // Ensure the working directory exists
   mkdirSync(workingDirectory, { recursive: true });
 
-  const term = nodePty.spawn("claude", [], {
+  const term = nodePty.spawn("claude", ["--dangerously-skip-permissions"], {
     name: "xterm-256color",
     cols: 80,
     rows: 24,

@@ -84,9 +84,9 @@ import {
   deleteEnvVar,
 } from "./envVars.js";
 import {
-  loadResendToken,
-  saveResendToken,
-  deleteResendToken,
+  loadResendConfig,
+  saveResendConfig,
+  deleteResendConfig,
   hasResendToken,
 } from "./resendConfig.js";
 import { sendTaskCompletionEmail } from "./emailer.js";
@@ -986,22 +986,40 @@ app.delete("/api/env-vars/:id", (req, res) => {
 
 app.get("/api/resend-config", (req, res) => {
   const profileId = req.profile?.id || null;
-  res.json({ configured: hasResendToken(profileId) });
+  const { from } = loadResendConfig(profileId);
+  res.json({ configured: hasResendToken(profileId), from: from || "" });
 });
 
 app.post("/api/resend-config", (req, res) => {
   const profileId = req.profile?.id || null;
-  const { token } = req.body || {};
-  if (!token || !token.trim()) {
+  const body = req.body || {};
+  const partial = {};
+
+  if (Object.prototype.hasOwnProperty.call(body, "token")) {
+    const t = (body.token || "").trim();
+    if (t) partial.token = t;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "from")) {
+    partial.from = (body.from || "").trim();
+  }
+
+  if (Object.keys(partial).length === 0) {
+    return res.status(400).json({ error: "Provide a token and/or from address" });
+  }
+
+  // If saving for the first time, a token must be present.
+  if (!hasResendToken(profileId) && !partial.token) {
     return res.status(400).json({ error: "Resend API token is required" });
   }
-  saveResendToken(profileId, token.trim());
-  res.json({ configured: true });
+
+  saveResendConfig(profileId, partial);
+  const { from } = loadResendConfig(profileId);
+  res.json({ configured: hasResendToken(profileId), from: from || "" });
 });
 
 app.delete("/api/resend-config", (req, res) => {
   const profileId = req.profile?.id || null;
-  deleteResendToken(profileId);
+  deleteResendConfig(profileId);
   res.status(204).end();
 });
 

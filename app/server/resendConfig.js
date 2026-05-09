@@ -11,33 +11,61 @@ function configPath(profileId) {
   return path.join(dir, CONFIG_FILENAME);
 }
 
-/**
- * Load the Resend API token for a profile. Returns the raw token string or null.
- */
-export function loadResendToken(profileId) {
+function readRaw(profileId) {
   try {
     const raw = fs.readFileSync(configPath(profileId), "utf-8");
     const data = JSON.parse(raw);
-    return data.token || null;
+    return typeof data === "object" && data !== null ? data : {};
   } catch {
     return null;
   }
 }
 
-/**
- * Save/update the Resend API token for a profile.
- */
-export function saveResendToken(profileId, token) {
+function writeRaw(profileId, data) {
   const filePath = configPath(profileId);
   const tmp = filePath + "." + crypto.randomBytes(4).toString("hex") + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify({ token, updatedAt: Date.now() }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, filePath);
 }
 
 /**
- * Delete the Resend API token for a profile.
+ * Load the full Resend config for a profile.
+ * Returns { token, from } where each field may be null/undefined.
  */
-export function deleteResendToken(profileId) {
+export function loadResendConfig(profileId) {
+  const data = readRaw(profileId);
+  if (!data) return { token: null, from: null };
+  return {
+    token: data.token || null,
+    from: data.from || null,
+  };
+}
+
+/**
+ * Save/update Resend config for a profile.  Accepts a partial { token?, from? }
+ * and merges it into the existing config — fields that are explicitly set to
+ * null or empty string are cleared, while undefined fields are left untouched.
+ */
+export function saveResendConfig(profileId, partial) {
+  const existing = readRaw(profileId) || {};
+  const next = { ...existing };
+
+  if (Object.prototype.hasOwnProperty.call(partial, "token")) {
+    if (partial.token == null || partial.token === "") delete next.token;
+    else next.token = partial.token;
+  }
+  if (Object.prototype.hasOwnProperty.call(partial, "from")) {
+    if (partial.from == null || partial.from === "") delete next.from;
+    else next.from = partial.from;
+  }
+  next.updatedAt = Date.now();
+  writeRaw(profileId, next);
+}
+
+/**
+ * Delete the Resend config for a profile.
+ */
+export function deleteResendConfig(profileId) {
   try {
     fs.unlinkSync(configPath(profileId));
     return true;
@@ -50,5 +78,5 @@ export function deleteResendToken(profileId) {
  * Check if a Resend token is configured (without returning the value).
  */
 export function hasResendToken(profileId) {
-  return !!loadResendToken(profileId);
+  return !!loadResendConfig(profileId).token;
 }

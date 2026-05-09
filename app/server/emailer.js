@@ -1,5 +1,7 @@
 import { Resend } from "resend";
-import { loadResendToken } from "./resendConfig.js";
+import { loadResendConfig } from "./resendConfig.js";
+
+const DEFAULT_FROM = "Claude Tasks <onboarding@resend.dev>";
 
 /**
  * Send task completion notification emails via Resend.
@@ -10,7 +12,7 @@ import { loadResendToken } from "./resendConfig.js";
  * @param {string} summaryUrl - The public summary URL
  */
 export async function sendTaskCompletionEmail(profileId, task, runEntry, summaryUrl) {
-  const token = loadResendToken(profileId);
+  const { token, from } = loadResendConfig(profileId);
   if (!token) {
     console.warn(`[emailer] No Resend token configured for profile ${profileId}, skipping email`);
     return;
@@ -67,7 +69,7 @@ export async function sendTaskCompletionEmail(profileId, task, runEntry, summary
 
   try {
     const { error } = await resend.emails.send({
-      from: "Claude Tasks <onboarding@resend.dev>",
+      from: from || DEFAULT_FROM,
       to: task.emails,
       subject,
       html,
