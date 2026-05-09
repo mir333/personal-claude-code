@@ -270,7 +270,9 @@ export async function sendMessage(id, text, attachments = null) {
     // so the agent's tool executions (bash, git, curl, etc.) have access to them.
     const envVars = loadEnvVarsForAgent(agent.profileId);
     if (Object.keys(envVars).length > 0) {
-      options.env = envVars;
+      // Merge with process.env so PATH (and other essentials the SDK needs to
+      // spawn the `node` subprocess) are preserved.
+      options.env = { ...process.env, ...envVars };
     }
 
     // Add PreToolUse hook for interactive questions
