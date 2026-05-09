@@ -23,6 +23,7 @@ import {
   subscribeAgent,
   unsubscribeAgent,
   getBufferedEvents,
+  hydrateAgentContextInfo,
 } from "./agents.js";
 import { loadConversation } from "./storage.js";
 import { getUsageStats } from "./usage.js";
@@ -77,6 +78,11 @@ import {
   deleteApiToken,
   resolveApiToken,
 } from "./apiTokens.js";
+import {
+  listEnvVars,
+  setEnvVar,
+  deleteEnvVar,
+} from "./envVars.js";
 import {
   acquireSessionAgent,
   hashMessagesPrefix,
@@ -687,6 +693,10 @@ app.post("/api/agents", async (req, res) => {
     const continueSession = hasRecoverableHistory(existingConvo);
 
     const agent = createAgent(name, normalized, profileId, continueSession);
+    // Hydrate context info from stored history so the gauge shows immediately
+    if (continueSession) {
+      hydrateAgentContextInfo(agent, existingConvo);
+    }
     return res.status(201).json(agent);
   }
 
@@ -940,6 +950,31 @@ app.delete("/api/api-tokens/:id", (req, res) => {
   res.status(204).end();
 });
 
+// --- Environment variables (profile-scoped secrets for agent tool execution) ---
+
+app.get("/api/env-vars", (req, res) => {
+  const profileId = req.profile?.id || null;
+  res.json(listEnvVars(profileId));
+});
+
+app.post("/api/env-vars", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const { name, value } = req.body || {};
+  try {
+    const result = setEnvVar(profileId, { name, value });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message || "Failed to set variable" });
+  }
+});
+
+app.delete("/api/env-vars/:id", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const ok = deleteEnvVar(profileId, req.params.id);
+  if (!ok) return res.status(404).json({ error: "Variable not found" });
+  res.status(204).end();
+});
+
 app.get("/api/agents", (req, res) => {
   const profileId = req.profile?.id || null;
   res.json(listAgents(profileId));
@@ -952,7 +987,12 @@ app.get("/api/agents/:id", (req, res) => {
   const pendingQuestion = agent.pendingQuestion
     ? { input: agent._pendingQuestionInput, toolUseId: agent._pendingQuestionToolUseId }
     : null;
-  res.json({ id, name, workingDirectory, status, interactiveQuestions, model: model || null, pendingQuestion });
+  res.json({
+    id, name, workingDirectory, status, interactiveQuestions,
+    model: model || null, pendingQuestion,
+    lastInputTokens: agent.lastInputTokens || 0,
+    contextWindow: agent.contextWindow || 0,
+  });
 });
 
 app.delete("/api/agents/:id", (req, res) => {

@@ -406,6 +406,7 @@ const SETTINGS_TABS = [
   { id: "gitlab", label: "GitLab" },
   { id: "azuredevops", label: "Azure DevOps" },
   { id: "apitokens", label: "API Tokens" },
+  { id: "envvars", label: "Env Vars" },
 ];
 
 const PROVIDER_HINTS = {
@@ -883,6 +884,179 @@ function ApiTokensTab() {
   );
 }
 
+/**
+ * Env Vars tab — lets the user set environment variables / secrets that are
+ * injected into the Claude agent process.  Useful for API tokens (GitLab,
+ * npm, etc.) that the AI needs when executing tools.
+ */
+function EnvVarsTab() {
+  const inputClass = "w-full mt-1 px-2 py-1.5 text-sm rounded-md border border-input bg-background";
+  const hintClass = "text-[11px] text-muted-foreground/70 mt-1 leading-tight";
+
+  const [vars, setVars] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function reload() {
+    try {
+      const res = await fetch("/api/env-vars");
+      if (res.ok) setVars(await res.json());
+    } catch {
+      // ignore
+    } finally {
+      setLoaded(true);
+    }
+  }
+
+  useEffect(() => { reload(); }, []);
+
+  async function handleAdd() {
+    setError(null);
+    const trimmed = newName.trim().toUpperCase();
+    if (!trimmed) { setError("Variable name is required"); return; }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+      setError("Name must contain only letters, digits, and underscores");
+      return;
+    }
+    if (!newValue) { setError("Value is required"); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/env-vars", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmed, value: newValue }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error || "Failed to save");
+        return;
+      }
+      setNewName("");
+      setNewValue("");
+      reload();
+    } catch (err) {
+      setError(err.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id) {
+    try {
+      await fetch(`/api/env-vars/${id}`, { method: "DELETE" });
+      reload();
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleUpdate(id, name) {
+    const value = prompt(`Enter new value for ${name}:`);
+    if (value == null || value === "") return;
+    try {
+      await fetch("/api/env-vars", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, value }),
+      });
+      reload();
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Set environment variables that are injected into every agent in this
+        profile. Use these for API tokens, credentials, and other secrets the
+        AI needs when running tools (e.g.{" "}
+        <code className="text-foreground/80">GITLAB_TOKEN</code>,{" "}
+        <code className="text-foreground/80">NPM_TOKEN</code>).
+      </p>
+
+      {/* Add form */}
+      <div className="space-y-1.5 p-2.5 rounded-md border border-border">
+        <div>
+          <label className="text-xs text-muted-foreground">Name</label>
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value.toUpperCase())}
+            className={inputClass}
+            placeholder="e.g. GITLAB_TOKEN"
+            spellCheck={false}
+          />
+          <p className={hintClass}>
+            Letters, digits, and underscores only. Automatically uppercased.
+          </p>
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground">Value</label>
+          <input
+            type="password"
+            value={newValue}
+            onChange={(e) => setNewValue(e.target.value)}
+            className={inputClass}
+            placeholder="Paste secret value here"
+          />
+        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        <Button variant="outline" size="sm" className="w-full" onClick={handleAdd} disabled={saving}>
+          {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Plus className="h-3 w-3 mr-1" />}
+          Set variable
+        </Button>
+      </div>
+
+      {/* Existing vars */}
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium text-muted-foreground">Configured variables</div>
+        {!loaded ? (
+          <div className="flex items-center justify-center py-4 text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          </div>
+        ) : vars.length === 0 ? (
+          <div className="text-xs text-muted-foreground italic px-2 py-1.5">
+            No variables configured yet.
+          </div>
+        ) : (
+          vars.map((v) => (
+            <div key={v.id} className="flex items-center justify-between gap-2 p-2 rounded-md border border-border">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-mono font-medium truncate">{v.name}</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {v.updatedAt
+                    ? `Updated ${new Date(v.updatedAt).toLocaleDateString()}`
+                    : `Created ${new Date(v.createdAt).toLocaleDateString()}`}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => handleUpdate(v.id, v.name)}
+                  className="p-1 text-muted-foreground hover:text-foreground"
+                  title="Update value"
+                >
+                  <Key className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => handleDelete(v.id)}
+                  className="p-1 text-muted-foreground hover:text-destructive"
+                  title="Delete variable"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GitSettingsPanel({ onClose, agents }) {
   const [activeTab, setActiveTab] = useState("user");
   const [name, setName] = useState("");
@@ -941,6 +1115,7 @@ function GitSettingsPanel({ onClose, agents }) {
           {activeTab === "gitlab" && <ProviderAccountsTab providerKey="gitlab" allAccounts={accounts} onAccountsUpdated={setAccounts} />}
           {activeTab === "azuredevops" && <ProviderAccountsTab providerKey="azuredevops" allAccounts={accounts} onAccountsUpdated={setAccounts} />}
           {activeTab === "apitokens" && <ApiTokensTab />}
+          {activeTab === "envvars" && <EnvVarsTab />}
         </>
       )}
     </div>

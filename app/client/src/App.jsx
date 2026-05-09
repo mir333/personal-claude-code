@@ -38,6 +38,7 @@ export default function App() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [interactiveQuestions, setInteractiveQuestions] = useState({});
   const [agentModels, setAgentModels] = useState({});  // agentId -> model string
+  const [serverContextInfo, setServerContextInfo] = useState({});  // agentId -> { contextWindow, used } from server
   const [pendingQuestions, setPendingQuestions] = useState({});
   const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
   const [queuedMessages, setQueuedMessages] = useState({}); // agentId -> [{ text }, ...] (FIFO queue)
@@ -127,15 +128,36 @@ export default function App() {
         updateAgentStatus(agentId, rest.status);
         fetch(`/api/agents/${agentId}/history?limit=50&offset=0`)
           .then((r) => r.ok ? r.json() : { entries: [], total: 0 })
-          .then(({ entries, total }) => {
+          .then(({ entries, total, lastContextInfo }) => {
             if (entries.length > 0) {
               setConversations((prev) => ({
                 ...prev,
                 [agentId]: { entries, total, hasMore: entries.length < total },
               }));
+              if (lastContextInfo) {
+                setServerContextInfo((prev) => ({ ...prev, [agentId]: lastContextInfo }));
+              }
             }
           })
           .catch(() => {});
+        return;
+      }
+
+      // Real-time context window update from the server (emitted on each API turn's
+      // message_start event).  This lets us update the gauge *during* multi-turn tool
+      // use instead of waiting for the final "done" stats entry.
+      if (type === "context_update") {
+        setServerContextInfo((prev) => {
+          const existing = prev[agentId] || {};
+          return {
+            ...prev,
+            [agentId]: {
+              used: rest.inputTokens,
+              // Keep previously known contextWindow if the server doesn't have it yet
+              contextWindow: rest.contextWindow || existing.contextWindow || 0,
+            },
+          };
+        });
         return;
       }
 
@@ -269,7 +291,10 @@ export default function App() {
     return groups;
   }, [selectedConversation]);
 
-  // Derive context window info from the last stats entry after the most recent context_cleared
+  // Derive context window info from the last stats entry after the most recent context_cleared.
+  // Falls back to serverContextInfo (computed from the *full* unpaginated history on the server)
+  // so that a restored / resumed session shows the context gauge immediately, even when the
+  // relevant stats entry hasn't been loaded into the paginated client-side window yet.
   const contextInfo = (() => {
     const conv = selectedConversation;
     let lastClearIdx = -1;
@@ -285,10 +310,19 @@ export default function App() {
           const cw = models.find(m => m.contextWindow)?.contextWindow;
           if (cw) {
             const u = conv[i].usage || {};
-            return { contextWindow: cw, used: (u.input_tokens || 0) + (u.output_tokens || 0) };
+            // input_tokens already includes the full conversation context (all prior
+            // messages + system prompt + tools).  output_tokens are the model's response
+            // for this turn and will only count as input on the *next* turn, so we must
+            // NOT add them here – doing so would overcount and produce inflated readings.
+            return { contextWindow: cw, used: (u.input_tokens || 0) };
           }
         }
       }
+    }
+    // Fallback: use server-computed context info (covers resumed sessions where the
+    // stats entry is outside the paginated window loaded on the client)
+    if (selectedAgentId && serverContextInfo[selectedAgentId]) {
+      return serverContextInfo[selectedAgentId];
     }
     return null;
   })();
@@ -420,7 +454,7 @@ export default function App() {
     function fetchHistory(force) {
       fetch(`/api/agents/${selectedAgentId}/history?limit=50&offset=0`)
         .then((r) => r.ok ? r.json() : { entries: [], total: 0 })
-        .then(({ entries, total }) => {
+        .then(({ entries, total, lastContextInfo }) => {
           if (entries.length > 0 || total === 0) {
             setConversations((prev) => {
               // If not forced, don't overwrite existing data
@@ -430,6 +464,9 @@ export default function App() {
                 [selectedAgentId]: { entries, total, hasMore: entries.length < total },
               };
             });
+            if (lastContextInfo) {
+              setServerContextInfo((prev) => ({ ...prev, [selectedAgentId]: lastContextInfo }));
+            }
           }
         })
         .catch(() => {});
@@ -456,6 +493,19 @@ export default function App() {
         }
         if (data.model) {
           setAgentModels((prev) => ({ ...prev, [selectedAgentId]: data.model }));
+        }
+
+        // Seed context info from the agent's in-memory state (survives across
+        // client reconnects as long as the server is running).
+        if (data.lastInputTokens > 0 && data.contextWindow > 0) {
+          setServerContextInfo((prev) => {
+            // Don't overwrite if we already have fresher data from a context_update event
+            if (prev[selectedAgentId]?.used >= data.lastInputTokens) return prev;
+            return {
+              ...prev,
+              [selectedAgentId]: { used: data.lastInputTokens, contextWindow: data.contextWindow },
+            };
+          });
         }
 
         // If the agent is busy, always force-refresh history to get the latest state.
@@ -697,6 +747,8 @@ export default function App() {
             [selectedAgentId]: { ...data, entries: [...data.entries, { type: "context_cleared", timestamp: Date.now() }], total: data.total + 1 },
           };
         });
+        // Reset context info so the gauge disappears until the next message
+        setServerContextInfo((prev) => { const next = { ...prev }; delete next[selectedAgentId]; return next; });
       }
     } catch {}
   }

@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import { mkdirSync } from "fs";
 import { loadConversation, appendEntry, loadConversationSlice, clearConversation } from "./storage.js";
 import { recordUsage } from "./usage.js";
+import { loadEnvVarsForAgent } from "./envVars.js";
 
 const agents = new Map();
 
@@ -25,6 +26,8 @@ export function createAgent(name, workingDirectory, profileId, continueSession =
     listeners: new Set(),      // Set of callback functions
     eventBuffer: [],           // Array of { index, event } for reconnect backfill
     eventIndex: 0,             // Monotonically increasing event counter
+    lastInputTokens: 0,       // Latest input_tokens from API (= current context usage)
+    contextWindow: 0,          // Context window size from last SDK result
   };
   agents.set(id, agent);
   return agent;
@@ -68,11 +71,58 @@ export function deleteAgent(id) {
   return true;
 }
 
+/**
+ * Compute the latest context-window info from the full (unpaginated) conversation.
+ * This is needed so that a restored / resumed session can show the context gauge
+ * even when the relevant "stats" entry falls outside the paginated window.
+ */
+function deriveLastContextInfo(allEntries) {
+  let lastClearIdx = -1;
+  for (let i = allEntries.length - 1; i >= 0; i--) {
+    if (allEntries[i].type === "context_cleared") { lastClearIdx = i; break; }
+  }
+  for (let i = allEntries.length - 1; i > lastClearIdx; i--) {
+    if (allEntries[i].type === "stats") {
+      const mu = allEntries[i].modelUsage;
+      if (mu) {
+        const models = Object.values(mu);
+        const cw = models.find(m => m.contextWindow)?.contextWindow;
+        if (cw) {
+          const u = allEntries[i].usage || {};
+          return { contextWindow: cw, used: u.input_tokens || 0 };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Hydrate an agent's in-memory context info from a stored conversation array.
+ * Called when an agent is created for an existing workspace so the context gauge
+ * is available immediately without waiting for the first API call.
+ */
+export function hydrateAgentContextInfo(agent, allEntries) {
+  const info = deriveLastContextInfo(allEntries);
+  if (info) {
+    agent.lastInputTokens = info.used;
+    agent.contextWindow = info.contextWindow;
+  }
+}
+
 export function getHistory(id, limit, offset) {
   const agent = agents.get(id);
   if (!agent) return null;
   if (limit != null) {
-    return loadConversationSlice(agent.workingDirectory, limit, offset);
+    const slice = loadConversationSlice(agent.workingDirectory, limit, offset);
+    // On the first page (offset 0), attach the latest context info derived from
+    // the *full* conversation so the client can display the context gauge
+    // immediately, even if the stats entry isn't in the paginated window.
+    if (offset === 0) {
+      const all = loadConversation(agent.workingDirectory);
+      slice.lastContextInfo = deriveLastContextInfo(all);
+    }
+    return slice;
   }
   return loadConversation(agent.workingDirectory);
 }
@@ -83,6 +133,8 @@ export function clearContext(id) {
   agent.sessionId = null;
   agent.history = [];
   agent.continueSession = false;
+  agent.lastInputTokens = 0;
+  agent.contextWindow = 0;
   appendEntry(agent.workingDirectory, {
     type: "context_cleared",
     timestamp: Date.now(),
@@ -214,6 +266,13 @@ export async function sendMessage(id, text, attachments = null) {
       options.model = agent.model;
     }
 
+    // Inject profile-scoped environment variables (secrets, API tokens, etc.)
+    // so the agent's tool executions (bash, git, curl, etc.) have access to them.
+    const envVars = loadEnvVarsForAgent(agent.profileId);
+    if (Object.keys(envVars).length > 0) {
+      options.env = envVars;
+    }
+
     // Add PreToolUse hook for interactive questions
     if (agent.interactiveQuestions) {
       options.hooks = {
@@ -331,12 +390,26 @@ export async function sendMessage(id, text, attachments = null) {
         continue;
       }
 
-      // Stream text deltas
+      // Stream text deltas and track per-turn context usage
       if (message.type === "stream_event") {
         const event = message.event;
         if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
           agent.textBuffer += event.delta.text;
           emit({ type: "text_delta", text: event.delta.text });
+        }
+        // message_start carries the input_tokens for this API turn, which equals
+        // the full conversation context sent to the model.  Emit it so the client
+        // can update the context gauge in real time during multi-turn tool use.
+        if (event.type === "message_start" && event.message?.usage) {
+          const inputTokens = event.message.usage.input_tokens || 0;
+          if (inputTokens > 0) {
+            agent.lastInputTokens = inputTokens;
+            emit({
+              type: "context_update",
+              inputTokens,
+              contextWindow: agent.contextWindow || null,
+            });
+          }
         }
       }
 
@@ -400,6 +473,13 @@ export async function sendMessage(id, text, attachments = null) {
         if (agent.textBuffer) {
           appendEntry(agent.workingDirectory, { type: "assistant_stream", text: agent.textBuffer });
           agent.textBuffer = "";
+        }
+
+        // Capture context window size from the result for future reference
+        const mu = message.modelUsage || {};
+        const cwEntry = Object.values(mu).find(m => m.contextWindow);
+        if (cwEntry) {
+          agent.contextWindow = cwEntry.contextWindow;
         }
 
         const doneEvent = {
