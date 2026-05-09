@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Loader2, ListTodo, FolderOpen, Search, Cpu } from "lucide-react";
+import { Loader2, ListTodo, FolderOpen, Search, Cpu, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog } from "@/components/ui/dialog";
@@ -13,6 +13,7 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
   const [cronExpression, setCronExpression] = useState(initial?.cronExpression || "");
   const [prompt, setPrompt] = useState(initial?.prompt || "");
   const [model, setModel] = useState(initial?.model || "");
+  const [emails, setEmails] = useState(initial?.emails ? initial.emails.join(", ") : "");
   const [workspaces, setWorkspaces] = useState([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(false);
   const [workspaceFilter, setWorkspaceFilter] = useState("");
@@ -31,6 +32,7 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
       setCronExpression(initial?.cronExpression || "");
       setPrompt(initial?.prompt || "");
       setModel(initial?.model || "");
+      setEmails(initial?.emails ? initial.emails.join(", ") : "");
       setError("");
       setCronError("");
       setWorkspaceFilter("");
@@ -91,6 +93,10 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
         cronExpression: cronExpression.trim() || null,
         prompt: prompt.trim(),
         model: model || null,
+        emails: emails
+          .split(",")
+          .map((e) => e.trim())
+          .filter((e) => e && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)),
       });
       onClose();
     } catch (err) {
@@ -99,6 +105,12 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
       setSubmitting(false);
     }
   }
+
+  const emailList = emails
+    .split(",")
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const invalidEmails = emailList.filter((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
 
   const filteredWorkspaces = workspaces.filter((ws) =>
     ws.name.toLowerCase().includes(workspaceFilter.toLowerCase())
@@ -290,6 +302,45 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
           </p>
         </div>
 
+        {/* Email Notifications */}
+        <div>
+          <label className="text-xs text-muted-foreground font-medium flex items-center gap-1">
+            <Mail className="h-3 w-3" />
+            Email Notifications (Optional)
+          </label>
+          <Input
+            value={emails}
+            onChange={(e) => setEmails(e.target.value)}
+            placeholder="e.g., alice@example.com, bob@example.com"
+            className="mt-1"
+          />
+          {emailList.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {emailList.map((email, i) => (
+                <span
+                  key={i}
+                  className={cn(
+                    "px-2 py-0.5 text-[11px] rounded-full",
+                    invalidEmails.includes(email)
+                      ? "bg-destructive/20 text-destructive"
+                      : "bg-primary/10 text-primary"
+                  )}
+                >
+                  {email}
+                </span>
+              ))}
+            </div>
+          )}
+          {invalidEmails.length > 0 && (
+            <p className="text-xs text-destructive mt-1">
+              Invalid email{invalidEmails.length > 1 ? "s" : ""}: {invalidEmails.join(", ")}
+            </p>
+          )}
+          <p className="text-[11px] text-muted-foreground/60 mt-1">
+            Comma-separated list. A summary link will be emailed after each run completes. Requires a Resend API token in Settings.
+          </p>
+        </div>
+
         {/* Actions */}
         <div className="flex gap-2 pt-1">
           <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
@@ -298,7 +349,7 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
           <Button
             type="submit"
             className="flex-1"
-            disabled={submitting || !name.trim() || !workingDirectory || !prompt.trim() || !!cronError}
+            disabled={submitting || !name.trim() || !workingDirectory || !prompt.trim() || !!cronError || invalidEmails.length > 0}
           >
             {submitting && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
             {isEdit ? "Save Changes" : "Create Task"}

@@ -84,6 +84,13 @@ import {
   deleteEnvVar,
 } from "./envVars.js";
 import {
+  loadResendToken,
+  saveResendToken,
+  deleteResendToken,
+  hasResendToken,
+} from "./resendConfig.js";
+import { sendTaskCompletionEmail } from "./emailer.js";
+import {
   acquireSessionAgent,
   hashMessagesPrefix,
   touchSessionAgent,
@@ -972,6 +979,29 @@ app.delete("/api/env-vars/:id", (req, res) => {
   const profileId = req.profile?.id || null;
   const ok = deleteEnvVar(profileId, req.params.id);
   if (!ok) return res.status(404).json({ error: "Variable not found" });
+  res.status(204).end();
+});
+
+// --- Resend email configuration (per-profile) ---
+
+app.get("/api/resend-config", (req, res) => {
+  const profileId = req.profile?.id || null;
+  res.json({ configured: hasResendToken(profileId) });
+});
+
+app.post("/api/resend-config", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const { token } = req.body || {};
+  if (!token || !token.trim()) {
+    return res.status(400).json({ error: "Resend API token is required" });
+  }
+  saveResendToken(profileId, token.trim());
+  res.json({ configured: true });
+});
+
+app.delete("/api/resend-config", (req, res) => {
+  const profileId = req.profile?.id || null;
+  deleteResendToken(profileId);
   res.status(204).end();
 });
 
@@ -1968,7 +1998,7 @@ app.get("/api/tasks", (req, res) => {
 
 app.post("/api/tasks", (req, res) => {
   const profileId = req.profile?.id || null;
-  const { name, cronExpression, workingDirectory, prompt, model } = req.body;
+  const { name, cronExpression, workingDirectory, prompt, model, emails } = req.body;
 
   if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
   if (!workingDirectory) return res.status(400).json({ error: "workingDirectory is required" });
@@ -1986,7 +2016,7 @@ app.post("/api/tasks", (req, res) => {
     return res.status(400).json({ error: "workingDirectory must be within the workspace" });
   }
 
-  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: prompt.trim(), model: model || null });
+  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: prompt.trim(), model: model || null, emails: emails || [] });
   res.status(201).json(task);
 });
 
@@ -2376,5 +2406,21 @@ onRunComplete(({ taskId, runId, task, runEntry }) => {
         console.error("[ws] Failed to broadcast task_run_complete:", err);
       }
     }
+  }
+});
+
+// Send email notifications on task run completion
+onRunComplete(async ({ taskId, runId, task, runEntry }) => {
+  try {
+    if (!task.emails || task.emails.length === 0) return;
+    if (!task.webhookToken) return; // Need webhook token for public URL
+
+    const host = process.env.BASE_URL_HOST || `localhost:${PORT}`;
+    const baseUrl = `${BASE_URL_PROTOCOL}://${host}`;
+    const summaryUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${task.webhookToken}/runs/${runId}/summary`;
+
+    await sendTaskCompletionEmail(task.profileId, task, runEntry, summaryUrl);
+  } catch (err) {
+    console.error(`[email] Failed to send notification for task "${task.name}":`, err.message);
   }
 });

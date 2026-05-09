@@ -224,6 +224,7 @@ export function createTask(profileId, config) {
   const id = crypto.randomUUID();
   const now = Date.now();
   const hasCron = !!config.cronExpression;
+  const emails = Array.isArray(config.emails) ? config.emails.filter(e => e && e.trim()) : [];
   const task = {
     id,
     profileId,
@@ -233,6 +234,7 @@ export function createTask(profileId, config) {
     workingDirectory: config.workingDirectory,
     prompt: config.prompt,
     model: config.model || null,
+    emails,
     webhookToken: null,
     createdAt: now,
     updatedAt: now,
@@ -240,6 +242,10 @@ export function createTask(profileId, config) {
     lastRunStatus: null,
     nextRunAt: hasCron ? computeNextRun(config.cronExpression) : null,
   };
+  // Auto-generate webhook token if emails are configured (needed for public summary URL)
+  if (task.emails.length > 0) {
+    task.webhookToken = crypto.randomBytes(32).toString("hex");
+  }
   tasks.set(id, task);
   persistTasks(profileId);
   return task;
@@ -276,6 +282,13 @@ export function updateTask(taskId, updates) {
   if (updates.workingDirectory !== undefined) task.workingDirectory = updates.workingDirectory;
   if (updates.prompt !== undefined) task.prompt = updates.prompt;
   if (updates.model !== undefined) task.model = updates.model || null;
+  if (updates.emails !== undefined) {
+    task.emails = Array.isArray(updates.emails) ? updates.emails.filter(e => e && e.trim()) : [];
+    // Auto-generate webhook token if emails are set and no token exists
+    if (task.emails.length > 0 && !task.webhookToken) {
+      task.webhookToken = crypto.randomBytes(32).toString("hex");
+    }
+  }
   task.updatedAt = Date.now();
 
   tasks.set(taskId, task);
@@ -645,6 +658,8 @@ export function startTaskScheduler() {
     for (const task of diskTasks) {
       // Ensure profileId is set (legacy data may not have it)
       task.profileId = profile.id;
+      // Normalize emails field for backward compatibility
+      task.emails = task.emails || [];
       // Recalculate nextRunAt in case server was down
       if (task.enabled && task.cronExpression) {
         task.nextRunAt = computeNextRun(task.cronExpression);
