@@ -1445,7 +1445,7 @@ export default function Sidebar({
         )}
       </div>
       <Separator />
-      <Dialog open={showSettings} onClose={() => setShowSettings(false)}>
+      <Dialog open={showSettings} onClose={() => setShowSettings(false)} className="max-w-lg">
         <GitSettingsPanel onClose={() => setShowSettings(false)} agents={agents} />
       </Dialog>
       <ScrollArea className="flex-1">
