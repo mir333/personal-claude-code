@@ -158,7 +158,7 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
       <Dialog
         open={!!previewFile}
         onClose={closePreview}
-        className="max-w-4xl max-h-[95vh] w-[95vw]"
+        className="max-w-[90vw] max-h-[95vh] w-[90vw]"
       >
         <div className="flex flex-col h-full max-h-[95vh]">
           <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
