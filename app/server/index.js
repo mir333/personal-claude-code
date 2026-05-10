@@ -123,6 +123,60 @@ process.on("warning", (warning) => {
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD;
 const BASE_URL_PROTOCOL = process.env.BASE_URL_PROTOCOL || "https";
 
+/**
+ * Wrap raw markdown in a self-contained HTML page that renders it nicely.
+ * Uses marked.js + highlight.js from CDN for zero-dependency rendering.
+ */
+function renderMarkdownHtml(markdown, title = "Summary") {
+  const escaped = markdown.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$");
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title.replace(/</g, "&lt;")}</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.8.1/github-markdown-dark.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" />
+  <style>
+    body {
+      background: #0d1117;
+      display: flex;
+      justify-content: center;
+      padding: 32px 16px;
+      margin: 0;
+    }
+    .markdown-body {
+      max-width: 920px;
+      width: 100%;
+      padding: 32px;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+    }
+    @media (prefers-color-scheme: light) {
+      body { background: #fff; }
+      .markdown-body { border-color: #d0d7de; }
+    }
+  </style>
+</head>
+<body>
+  <article id="content" class="markdown-body"></article>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.7/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+  <script>
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+          return hljs.highlight(code, { language: lang }).value;
+        }
+        return hljs.highlightAuto(code).value;
+      },
+    });
+    document.getElementById("content").innerHTML = marked.parse(\`${escaped}\`);
+  </script>
+</body>
+</html>`;
+}
+
 app.use(express.json());
 
 // Session middleware (needed for auth and WebSocket session lookup)
@@ -294,6 +348,22 @@ app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit
   res.json({ ok: true, message: "Task triggered via webhook", runId: result.runId, summaryUrl, summaryFilename: result.summaryFilename });
 });
 
+/**
+ * Send a summary file — raw markdown or rendered HTML depending on ?render query param.
+ */
+function sendSummaryFile(res, filePath, taskName) {
+  const render = res.req.query.render === "true" || res.req.query.render === "1";
+  if (!render) {
+    return res.sendFile(filePath, { dotfiles: "allow" });
+  }
+  try {
+    const md = fs.readFileSync(filePath, "utf-8");
+    res.type("html").send(renderMarkdownHtml(md, taskName || "Summary"));
+  } catch (err) {
+    res.status(500).json({ error: "Failed to render summary" });
+  }
+}
+
 // Public summary endpoint via webhook token — serves from .claude-tasks/ in workspace
 app.get("/api/webhooks/tasks/:taskId/:token/runs/:runId/summary", (req, res) => {
   const { taskId, token, runId } = req.params;
@@ -315,16 +385,16 @@ app.get("/api/webhooks/tasks/:taskId/:token/runs/:runId/summary", (req, res) => 
     // Fallback to archived summary.md
     const filePath = getRunArtifactPath(taskId, runId, "summary.md");
     if (!filePath) return res.status(404).json({ error: "Summary not found" });
-    return res.sendFile(filePath, { dotfiles: "allow" });
+    return sendSummaryFile(res, filePath, task.name);
   }
 
   // Try .claude-tasks/ first, then fall back to archive
   const wsPath = getWorkspaceSummaryPath(taskId, detail.summaryFilename);
-  if (wsPath) return res.sendFile(wsPath, { dotfiles: "allow" });
+  if (wsPath) return sendSummaryFile(res, wsPath, task.name);
 
   const filePath = getRunArtifactPath(taskId, runId, "summary.md");
   if (!filePath) return res.status(404).json({ error: "Summary not found" });
-  res.sendFile(filePath, { dotfiles: "allow" });
+  sendSummaryFile(res, filePath, task.name);
 });
 
 // Public artifact access via webhook token (no session required)
@@ -2132,13 +2202,13 @@ app.get("/api/tasks/:id/runs/:runId/summary", (req, res) => {
   const detail = getRunDetail(req.params.id, req.params.runId);
   if (detail?.summaryFilename) {
     const wsPath = getWorkspaceSummaryPath(req.params.id, detail.summaryFilename);
-    if (wsPath) return res.sendFile(wsPath, { dotfiles: "allow" });
+    if (wsPath) return sendSummaryFile(res, wsPath, task.name);
   }
 
   // Fallback to archived summary.md
   const filePath = getRunArtifactPath(req.params.id, req.params.runId, "summary.md");
   if (!filePath) return res.status(404).json({ error: "Summary not found" });
-  res.sendFile(filePath, { dotfiles: "allow" });
+  sendSummaryFile(res, filePath, task.name);
 });
 
 app.get("/api/tasks/:id/runs/:runId/artifacts", (req, res) => {
@@ -2439,7 +2509,7 @@ onRunComplete(async ({ taskId, runId, task, runEntry }) => {
       return;
     }
 
-    const summaryUrl = `${task.webhookBaseUrl}/api/webhooks/tasks/${taskId}/${task.webhookToken}/runs/${runId}/summary`;
+    const summaryUrl = `${task.webhookBaseUrl}/api/webhooks/tasks/${taskId}/${task.webhookToken}/runs/${runId}/summary?render=true`;
 
     await sendTaskCompletionEmail(task.profileId, task, runEntry, summaryUrl);
   } catch (err) {
