@@ -1551,6 +1551,28 @@ app.get("/api/agents/:id/file", async (req, res) => {
   }
 });
 
+app.get("/api/agents/:id/file/download", async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+  const relativePath = req.query.path;
+  if (!relativePath) return res.status(400).json({ error: "path query parameter is required" });
+
+  const resolved = resolveAgentPath(agent, relativePath);
+  if (!resolved) return res.status(400).json({ error: "Invalid path" });
+
+  try {
+    const stat = await fs.promises.stat(resolved);
+    if (stat.isDirectory()) return res.status(400).json({ error: "Cannot download a directory" });
+
+    const filename = path.basename(resolved);
+    res.download(resolved, filename);
+  } catch (err) {
+    if (err.code === "ENOENT") return res.status(404).json({ error: "File not found" });
+    res.status(500).json({ error: err.message || "Failed to download file" });
+  }
+});
+
 app.put("/api/agents/:id/file", async (req, res) => {
   const agent = getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });

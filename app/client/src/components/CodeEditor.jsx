@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Editor from "@monaco-editor/react";
-import { ChevronRight, File, Folder, FolderOpen, Loader2, Save, RefreshCw, AlertTriangle } from "lucide-react";
+import { ChevronRight, File, Folder, FolderOpen, Loader2, Save, RefreshCw, AlertTriangle, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -282,6 +282,14 @@ export default function CodeEditor({ agentId, visible }) {
                 {selectedFile.path}
                 {dirty && <span className="text-primary ml-1">●</span>}
               </span>
+              <a
+                href={`/api/agents/${agentId}/file/download?path=${encodeURIComponent(selectedFile.path)}`}
+                download
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                title="Download file"
+              >
+                <Download className="h-3 w-3" />
+              </a>
               {dirty && !selectedFile.binary && (
                 <button
                   onClick={handleSave}
