@@ -2421,7 +2421,7 @@ wss.on("connection", (ws) => {
         ws.send(JSON.stringify({ type: "error", message: "Agent not found" }));
         return;
       }
-      const term = spawnTerminal(data.agentId, agent.workingDirectory);
+      const term = spawnTerminal(data.agentId, agent.workingDirectory, agent.sessionId);
       connectionTerminals.add(data.agentId);
       term.onData((output) => {
         if (ws.readyState === ws.OPEN) {

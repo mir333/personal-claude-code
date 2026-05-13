@@ -17,7 +17,7 @@ function loadPty() {
   }
 }
 
-export function spawnTerminal(agentId, workingDirectory) {
+export function spawnTerminal(agentId, workingDirectory, sessionId) {
   const nodePty = loadPty();
   if (!nodePty) throw new Error("Terminal not available: node-pty failed to load");
 
@@ -27,7 +27,17 @@ export function spawnTerminal(agentId, workingDirectory) {
   // Ensure the working directory exists
   mkdirSync(workingDirectory, { recursive: true });
 
-  const term = nodePty.spawn("claude", ["--dangerously-skip-permissions"], {
+  // Build CLI args — resume the SDK agent's session so the terminal shares
+  // the same conversation context.  Falls back to --continue (most recent
+  // session in this working directory) if no sessionId is available yet.
+  const args = ["--dangerously-skip-permissions"];
+  if (sessionId) {
+    args.push("--resume", sessionId);
+  } else {
+    args.push("--continue");
+  }
+
+  const term = nodePty.spawn("claude", args, {
     name: "xterm-256color",
     cols: 80,
     rows: 24,
