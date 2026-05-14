@@ -11,7 +11,7 @@ const DEFAULT_FROM = "Claude Tasks <onboarding@resend.dev>";
  * @param {object} runEntry - The run entry ({ id, status, durationMs, error })
  * @param {string} summaryUrl - The public summary URL
  */
-export async function sendTaskCompletionEmail(profileId, task, runEntry, summaryUrl) {
+export async function sendTaskCompletionEmail(profileId, task, runEntry, summaryUrl, summariesUrl) {
   const { token, from } = loadResendConfig(profileId);
   if (!token) {
     console.warn(`[emailer] No Resend token configured for profile ${profileId}, skipping email`);
@@ -61,6 +61,11 @@ export async function sendTaskCompletionEmail(profileId, task, runEntry, summary
          style="display: inline-block; background: #2563eb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 500;">
         View Summary
       </a>
+      ${summariesUrl ? `
+      <a href="${escapeHtml(summariesUrl)}"
+         style="display: inline-block; background: transparent; color: #2563eb; padding: 10px 20px; border: 1px solid #2563eb; border-radius: 6px; text-decoration: none; font-weight: 500; margin-left: 8px;">
+        All Summaries
+      </a>` : ""}
       <p style="margin-top: 24px; font-size: 12px; color: #999;">
         Run ID: ${escapeHtml(runEntry.id)}
       </p>

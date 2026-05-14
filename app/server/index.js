@@ -177,6 +177,118 @@ function renderMarkdownHtml(markdown, title = "Summary") {
 </html>`;
 }
 
+/**
+ * Render an HTML page showing a clickable list of summary files for a task.
+ * Each item links to the individual summary (with ?render=true for HTML view).
+ */
+function renderSummaryListHtml(taskName, summaries, buildUrl) {
+  const listItems = summaries
+    .map((s) => {
+      const url = buildUrl(s.runId);
+      const date = s.completedAt ? new Date(s.completedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }) : "Unknown date";
+      const status = s.status === "success" ? "✓" : s.status === "error" ? "✗" : s.status === "interrupted" ? "⚠" : "•";
+      return `<li><a href="${url}">${status} <span class="filename">${s.filename}</span><span class="meta">${date}</span></a></li>`;
+    })
+    .join("\n      ");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Summaries — ${taskName.replace(/</g, "&lt;")}</title>
+  <style>
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      padding: 32px 16px;
+      margin: 0;
+    }
+    .container {
+      max-width: 720px;
+      width: 100%;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 24px 32px;
+    }
+    h1 {
+      font-size: 1.4em;
+      margin: 0 0 4px 0;
+      color: #f0f6fc;
+    }
+    .subtitle {
+      font-size: 0.85em;
+      color: #8b949e;
+      margin-bottom: 20px;
+    }
+    ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    li {
+      border-bottom: 1px solid #21262d;
+    }
+    li:last-child {
+      border-bottom: none;
+    }
+    a {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 10px 8px;
+      color: #58a6ff;
+      text-decoration: none;
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+    a:hover {
+      background: #161b22;
+      text-decoration: underline;
+    }
+    .filename {
+      flex: 1;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.9em;
+      word-break: break-all;
+    }
+    .meta {
+      font-size: 0.8em;
+      color: #8b949e;
+      white-space: nowrap;
+    }
+    .empty {
+      color: #8b949e;
+      padding: 20px 0;
+      text-align: center;
+    }
+    @media (prefers-color-scheme: light) {
+      body { background: #fff; color: #1f2328; }
+      .container { border-color: #d0d7de; }
+      h1 { color: #1f2328; }
+      .subtitle, .meta { color: #656d76; }
+      a { color: #0969da; }
+      a:hover { background: #f6f8fa; }
+      li { border-color: #d8dee4; }
+      .empty { color: #656d76; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Summaries</h1>
+    <p class="subtitle">${taskName.replace(/</g, "&lt;")} — ${summaries.length} run${summaries.length !== 1 ? "s" : ""}</p>
+    ${summaries.length === 0
+      ? '<p class="empty">No summaries available yet.</p>'
+      : `<ul>\n      ${listItems}\n    </ul>`}
+  </div>
+</body>
+</html>`;
+}
+
 app.use(express.json());
 
 // Session middleware (needed for auth and WebSocket session lookup)
@@ -345,7 +457,8 @@ app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit
   if (!result) return res.status(409).json({ error: "Task is already running" });
   const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
   const summaryUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${token}/runs/${result.runId}/summary`;
-  res.json({ ok: true, message: "Task triggered via webhook", runId: result.runId, summaryUrl, summaryFilename: result.summaryFilename });
+  const summariesUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${token}/summaries`;
+  res.json({ ok: true, message: "Task triggered via webhook", runId: result.runId, summaryUrl, summariesUrl, summaryFilename: result.summaryFilename });
 });
 
 /**
@@ -395,6 +508,31 @@ app.get("/api/webhooks/tasks/:taskId/:token/runs/:runId/summary", (req, res) => 
   const filePath = getRunArtifactPath(taskId, runId, "summary.md");
   if (!filePath) return res.status(404).json({ error: "Summary not found" });
   sendSummaryFile(res, filePath, task.name);
+});
+
+// Public summaries list endpoint — shows all summaries for a task via webhook token
+app.get("/api/webhooks/tasks/:taskId/:token/summaries", (req, res) => {
+  const { taskId, token } = req.params;
+  const task = getTaskByWebhookToken(taskId, token);
+  if (!task) return res.status(404).json({ error: "Not found" });
+
+  const runs = getRunHistory(taskId, 100);
+  const summaries = runs
+    .filter((r) => r.summaryFilename)
+    .map((r) => ({
+      runId: r.id,
+      filename: r.summaryFilename,
+      status: r.status,
+      startedAt: r.startedAt,
+      completedAt: r.completedAt,
+    }));
+
+  const render = req.query.render === "true" || req.query.render === "1";
+  if (!render) return res.json(summaries);
+
+  const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
+  const buildUrl = (runId) => `${baseUrl}/api/webhooks/tasks/${taskId}/${token}/runs/${runId}/summary?render=true`;
+  res.type("html").send(renderSummaryListHtml(task.name, summaries, buildUrl));
 });
 
 // Public artifact access via webhook token (no session required)
@@ -1497,7 +1635,7 @@ app.get("/api/agents/:id/files", async (req, res) => {
   try {
     const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
     const items = entries
-      .filter((e) => e.name !== ".git" && !e.name.startsWith(".claude"))
+      .filter((e) => e.name !== ".git" && (e.name === ".claude-tasks" || !e.name.startsWith(".claude")))
       .map((e) => ({
         name: e.name,
         type: e.isDirectory() ? "directory" : "file",
@@ -2233,6 +2371,29 @@ app.get("/api/tasks/:id/runs/:runId/summary", (req, res) => {
   sendSummaryFile(res, filePath, task.name);
 });
 
+// Authenticated summaries list endpoint — lists all summaries for a task
+app.get("/api/tasks/:id/summaries", (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+
+  const runs = getRunHistory(req.params.id, 100);
+  const summaries = runs
+    .filter((r) => r.summaryFilename)
+    .map((r) => ({
+      runId: r.id,
+      filename: r.summaryFilename,
+      status: r.status,
+      startedAt: r.startedAt,
+      completedAt: r.completedAt,
+    }));
+
+  const render = req.query.render === "true" || req.query.render === "1";
+  if (!render) return res.json(summaries);
+
+  const buildUrl = (runId) => `/api/tasks/${req.params.id}/runs/${runId}/summary?render=true`;
+  res.type("html").send(renderSummaryListHtml(task.name, summaries, buildUrl));
+});
+
 app.get("/api/tasks/:id/runs/:runId/artifacts", (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "Task not found" });
@@ -2532,8 +2693,9 @@ onRunComplete(async ({ taskId, runId, task, runEntry }) => {
     }
 
     const summaryUrl = `${task.webhookBaseUrl}/api/webhooks/tasks/${taskId}/${task.webhookToken}/runs/${runId}/summary?render=true`;
+    const summariesUrl = `${task.webhookBaseUrl}/api/webhooks/tasks/${taskId}/${task.webhookToken}/summaries?render=true`;
 
-    await sendTaskCompletionEmail(task.profileId, task, runEntry, summaryUrl);
+    await sendTaskCompletionEmail(task.profileId, task, runEntry, summaryUrl, summariesUrl);
   } catch (err) {
     console.error(`[email] Failed to send notification for task "${task.name}":`, err.message);
   }
