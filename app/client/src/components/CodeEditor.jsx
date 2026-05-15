@@ -143,6 +143,36 @@ export default function CodeEditor({ agentId, visible }) {
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const editorRef = useRef(null);
+  const [treeWidth, setTreeWidth] = useState(224); // default w-56 = 224px
+  const isDragging = useRef(false);
+  const containerRef = useRef(null);
+
+  // Drag-to-resize handler for the file tree panel
+  const handleDragStart = useCallback((e) => {
+    e.preventDefault();
+    isDragging.current = true;
+    const startX = e.clientX;
+    const startWidth = treeWidth;
+
+    function onMouseMove(ev) {
+      const delta = ev.clientX - startX;
+      const newWidth = Math.min(500, Math.max(120, startWidth + delta));
+      setTreeWidth(newWidth);
+    }
+
+    function onMouseUp() {
+      isDragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    }
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [treeWidth]);
 
   // Reset when agent changes
   useEffect(() => {
@@ -236,9 +266,9 @@ export default function CodeEditor({ agentId, visible }) {
   if (!visible) return null;
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full" ref={containerRef}>
       {/* File tree panel */}
-      <div className="w-56 border-r border-border bg-card flex flex-col shrink-0">
+      <div className="border-r border-border bg-card flex flex-col shrink-0" style={{ width: treeWidth }}>
         <div className="flex items-center justify-between px-3 py-2 border-b border-border">
           <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Files</span>
           <button
@@ -258,6 +288,13 @@ export default function CodeEditor({ agentId, visible }) {
           />
         </div>
       </div>
+
+      {/* Resize handle */}
+      <div
+        onMouseDown={handleDragStart}
+        className="w-1 cursor-col-resize bg-transparent hover:bg-primary/30 active:bg-primary/50 transition-colors shrink-0"
+        title="Drag to resize file tree"
+      />
 
       {/* Editor panel */}
       <div className="flex-1 flex flex-col min-w-0">
