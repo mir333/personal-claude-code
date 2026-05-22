@@ -25,6 +25,7 @@ function Dialog({ open, onClose, children, className }) {
           "relative z-10 w-full max-w-md max-h-[85vh] overflow-y-auto rounded-lg border border-border bg-popover shadow-lg",
           className
         )}
+        onClick={(e) => e.stopPropagation()}
       >
         {children}
       </div>
