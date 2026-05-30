@@ -7,7 +7,8 @@
     "dev:client": "vite --config client/vite.config.js",
     "dev:server": "node server/index.js",
     "build": "vite build --config client/vite.config.js",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.158",
