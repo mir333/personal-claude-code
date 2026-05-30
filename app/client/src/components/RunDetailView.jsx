@@ -7,6 +7,8 @@ import ToolCallCard from "./ToolCallCard.jsx";
 import ErrorCard from "./ErrorCard.jsx";
 import ThinkingCard from "./ThinkingCard.jsx";
 import Markdown from "./Markdown.jsx";
+import WorkflowGraph from "./WorkflowGraph.jsx";
+import { buildGraphFromDsl } from "@/lib/workflowGraphClient";
 import { formatDuration } from "@/lib/cron";
 
 export default function RunDetailView({ scheduleId, runId, scheduleName, onBack, fetchRunDetail }) {
@@ -127,6 +129,18 @@ export default function RunDetailView({ scheduleId, runId, scheduleName, onBack,
       {detail.error && (
         <div className="mx-4 mt-3 bg-destructive/10 text-destructive rounded-md px-3 py-2 text-xs">
           {detail.error}
+        </div>
+      )}
+
+      {/* Workflow run graph */}
+      {detail.workflow && detail.dsl && (
+        <div className="mx-4 mt-3 border border-border rounded-md p-2 overflow-auto max-h-[420px]">
+          <div className="text-xs font-medium text-muted-foreground mb-1">Workflow</div>
+          <WorkflowGraph
+            graph={buildGraphFromDsl(detail.dsl)}
+            startId={detail.dsl.start}
+            nodeState={detail.nodeState}
+          />
         </div>
       )}
 

@@ -11,7 +11,17 @@ import {
   subscribeAgent,
   unsubscribeAgent,
 } from "./agents.js";
+// Imported for its runtime use inside tick(); the tasks.js <-> workflow-engine.js
+// cycle is safe because executeWorkflow is only called at runtime, not eval time.
+import { executeWorkflow } from "./workflow-engine.js";
 const SUMMARY_INSTRUCTION = `\n\n---\n**IMPORTANT:** After completing your task, you MUST create a markdown file called \`summary.md\` in the current working directory with a complete summary of your findings, analysis, and results. All output files must be saved to the current working directory (the connected workspace).`;
+
+// Normalize workflow-related fields on a task object (mutates and returns it).
+export function normalizeTaskKind(task) {
+  task.kind = task.kind === "workflow" ? "workflow" : "task";
+  task.workflowSource = task.kind === "workflow" ? (task.workflowSource || null) : null;
+  return task;
+}
 
 // --- .claude-tasks helpers ---
 
@@ -233,6 +243,8 @@ export function createTask(profileId, config) {
     cronExpression: config.cronExpression || null,
     workingDirectory: config.workingDirectory,
     prompt: config.prompt,
+    kind: config.kind === "workflow" ? "workflow" : "task",
+    workflowSource: config.kind === "workflow" ? (config.workflowSource || null) : null,
     model: config.model || null,
     emails,
     webhookToken: null,
@@ -283,6 +295,9 @@ export function updateTask(taskId, updates) {
   }
   if (updates.workingDirectory !== undefined) task.workingDirectory = updates.workingDirectory;
   if (updates.prompt !== undefined) task.prompt = updates.prompt;
+  if (updates.kind !== undefined) task.kind = updates.kind === "workflow" ? "workflow" : "task";
+  if (updates.workflowSource !== undefined) task.workflowSource = updates.workflowSource || null;
+  if (task.kind !== "workflow") task.workflowSource = null;
   if (updates.model !== undefined) task.model = updates.model || null;
   if (updates.emails !== undefined) {
     task.emails = Array.isArray(updates.emails) ? updates.emails.filter(e => e && e.trim()) : [];
@@ -439,6 +454,55 @@ function scanOutputFiles(dir) {
     return files;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Run a single task's prompt in a fresh ephemeral subagent and return its text
+ * output. Used by the workflow engine. Does NOT touch the task's run history or
+ * runningJobs — the caller owns lifecycle/persistence.
+ */
+export async function runTaskAsSubagent(task, payload, profileId, runId) {
+  if (!fs.existsSync(task.workingDirectory)) {
+    throw new Error(`Working directory does not exist: ${task.workingDirectory}`);
+  }
+  const conversation = [];
+  const summaryFilename = generateSummaryFilename(task.name, runId);
+  const agent = createAgent(`wf-${task.name}-${runId}`, task.workingDirectory, profileId);
+  agent.interactiveQuestions = false;
+  if (task.model) agent.model = task.model;
+
+  const listener = (event) => conversation.push(event);
+  subscribeAgent(agent.id, listener);
+  try {
+    const prompt = payload
+      ? `${task.prompt}\n\n${payload}${SUMMARY_INSTRUCTION}`
+      : `${task.prompt}${SUMMARY_INSTRUCTION}`;
+    await sendMessage(agent.id, prompt);
+    unsubscribeAgent(agent.id, listener);
+
+    const doneEvent = conversation.find((e) => e.type === "done");
+    const assistantTexts = conversation
+      .filter((e) => e.type === "text_delta")
+      .map((e) => e.text)
+      .join("");
+    const errorEvent = conversation.find((e) => e.type === "error");
+
+    const summaryPath = persistSummaryToWorkspace(
+      task.workingDirectory, summaryFilename, conversation, assistantTexts
+    );
+
+    return {
+      outputText: assistantTexts,
+      cost: doneEvent?.cost || 0,
+      usage: doneEvent?.usage || null,
+      error: errorEvent ? errorEvent.message : null,
+      summaryFilename,
+      summaryPath,
+      conversation,
+    };
+  } finally {
+    try { deleteAgent(agent.id); } catch {}
   }
 }
 
@@ -648,7 +712,8 @@ function tick() {
     if (!task.cronExpression) continue;
     if (runningJobs.has(id)) continue;
     if (task.nextRunAt && task.nextRunAt <= now) {
-      executeTask(id);
+      if (task.kind === "workflow") executeWorkflow(id);
+      else executeTask(id);
     }
   }
 }
@@ -668,6 +733,7 @@ export function startTaskScheduler() {
       task.profileId = profile.id;
       // Normalize emails field for backward compatibility
       task.emails = task.emails || [];
+      normalizeTaskKind(task);
       // Recalculate nextRunAt in case server was down
       if (task.enabled && task.cronExpression) {
         task.nextRunAt = computeNextRun(task.cronExpression);
@@ -733,3 +799,41 @@ export function getWorkspaceSummaryPath(taskId, summaryFilename) {
   if (!fs.existsSync(filePath)) return null;
   return filePath;
 }
+
+// --- Helpers exposed for the workflow engine ---
+
+export function getRunOutputDirForTask(profileId, taskId, runId) {
+  return getRunOutputDir(profileId, taskId, runId);
+}
+
+export function recordRun(profileId, taskId, runId, runEntry, detail) {
+  saveRunDetail(profileId, taskId, runId, detail);
+  appendRunEntry(profileId, taskId, runEntry);
+}
+
+export function markTaskRunning(taskId) {
+  if (runningJobs.has(taskId)) return false;
+  runningJobs.set(taskId, { agentId: null, aborted: false, workflow: true });
+  return true;
+}
+
+export function clearTaskRunning(taskId) {
+  runningJobs.delete(taskId);
+}
+
+export function updateTaskRunStatus(taskId, status) {
+  const task = tasks.get(taskId);
+  if (!task) return;
+  task.lastRunAt = Date.now();
+  task.lastRunStatus = status;
+  if (task.cronExpression) task.nextRunAt = computeNextRun(task.cronExpression);
+  persistTasks(task.profileId);
+}
+
+export function notifyRunComplete(payload) {
+  for (const cb of runCompleteListeners) {
+    try { cb(payload); } catch {}
+  }
+}
+
+export { generateSummaryFilename };
