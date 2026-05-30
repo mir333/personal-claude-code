@@ -453,7 +453,9 @@ app.post("/api/webhooks/tasks/:taskId/:token", express.text({ type: "*/*", limit
   if (isRunning(taskId)) return res.status(409).json({ error: "Task is already running" });
 
   const payload = req.body && typeof req.body === "string" && req.body.trim() ? req.body : null;
-  const result = triggerTask(taskId, payload ? { payload } : undefined);
+  const result = task.kind === "workflow"
+    ? triggerWorkflow(taskId, payload ? { payload } : undefined)
+    : triggerTask(taskId, payload ? { payload } : undefined);
   if (!result) return res.status(409).json({ error: "Task is already running" });
   const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
   const summaryUrl = `${baseUrl}/api/webhooks/tasks/${taskId}/${token}/runs/${result.runId}/summary`;
@@ -2236,6 +2238,9 @@ import {
   getRunArtifactPath,
   getWorkspaceSummaryPath,
 } from "./tasks.js";
+import { parseWorkflowSource, validateWorkflow, buildGraph } from "./workflow-dsl.js";
+import { chatOnce, buildAuthoringSystem } from "./authoring.js";
+import { triggerWorkflow } from "./workflow-engine.js";
 
 app.get("/api/tasks", (req, res) => {
   const profileId = req.profile?.id || null;
@@ -2246,11 +2251,19 @@ app.get("/api/tasks", (req, res) => {
 
 app.post("/api/tasks", (req, res) => {
   const profileId = req.profile?.id || null;
-  const { name, cronExpression, workingDirectory, prompt, model, emails } = req.body;
+  const { name, cronExpression, workingDirectory, prompt, model, emails, kind, workflowSource } = req.body;
+  const isWorkflow = kind === "workflow";
 
   if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
   if (!workingDirectory) return res.status(400).json({ error: "workingDirectory is required" });
-  if (!prompt || !prompt.trim()) return res.status(400).json({ error: "prompt is required" });
+  if (!isWorkflow && (!prompt || !prompt.trim())) return res.status(400).json({ error: "prompt is required" });
+  if (isWorkflow) {
+    const { dsl, error } = parseWorkflowSource(workflowSource || "");
+    if (error) return res.status(400).json({ error: `Invalid workflow: ${error}` });
+    const ids = listAllTasks(profileId).filter((t) => t.kind !== "workflow").map((t) => t.id);
+    const { valid, errors } = validateWorkflow(dsl, ids);
+    if (!valid) return res.status(400).json({ error: `Invalid workflow: ${errors.map((e) => e.message).join("; ")}` });
+  }
 
   // Validate cron if provided
   if (cronExpression) {
@@ -2265,8 +2278,42 @@ app.post("/api/tasks", (req, res) => {
   }
 
   const webhookBaseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;
-  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: prompt.trim(), model: model || null, emails: emails || [], webhookBaseUrl });
+  const task = createTask(profileId, { name: name.trim(), cronExpression: cronExpression || null, workingDirectory, prompt: (prompt || "").trim(), model: model || null, emails: emails || [], webhookBaseUrl, kind: isWorkflow ? "workflow" : "task", workflowSource: isWorkflow ? workflowSource : null });
   res.status(201).json(task);
+});
+
+app.post("/api/tasks/validate-workflow", (req, res) => {
+  const profileId = req.profile?.id || null;
+  const { workflowSource } = req.body || {};
+  const { dsl, error } = parseWorkflowSource(workflowSource || "");
+  if (error) {
+    return res.json({ valid: false, errors: [{ nodeId: null, message: error }], graph: { nodes: [], edges: [], globalErrors: [error] } });
+  }
+  const availableTaskIds = listAllTasks(profileId)
+    .filter((t) => t.kind !== "workflow")
+    .map((t) => t.id);
+  const { valid, errors } = validateWorkflow(dsl, availableTaskIds);
+  const graph = buildGraph(dsl, errors);
+  res.json({ valid, errors, graph });
+});
+
+app.post("/api/tasks/author-assistant", async (req, res) => {
+  const profileId = req.profile?.id || null;
+  const { mode, messages } = req.body || {};
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: "messages required" });
+  }
+  try {
+    const taskList = mode === "workflow"
+      ? listAllTasks(profileId).filter((t) => t.kind !== "workflow")
+          .map((t) => ({ id: t.id, name: t.name, workingDirectory: t.workingDirectory, prompt: t.prompt }))
+      : [];
+    const system = buildAuthoringSystem(mode, taskList);
+    const reply = await chatOnce({ system, messages });
+    res.json({ reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/api/tasks/runs", (req, res) => {
@@ -2299,6 +2346,15 @@ app.put("/api/tasks/:id", (req, res) => {
     }
   }
 
+  if (req.body.kind === "workflow" || (req.body.kind === undefined && task.kind === "workflow")) {
+    const src = req.body.workflowSource !== undefined ? req.body.workflowSource : task.workflowSource;
+    const { dsl, error } = parseWorkflowSource(src || "");
+    if (error) return res.status(400).json({ error: `Invalid workflow: ${error}` });
+    const ids = listAllTasks(req.profile?.id || null).filter((t) => t.kind !== "workflow" && t.id !== task.id).map((t) => t.id);
+    const { valid, errors } = validateWorkflow(dsl, ids);
+    if (!valid) return res.status(400).json({ error: `Invalid workflow: ${errors.map((e) => e.message).join("; ")}` });
+  }
+
   const updated = updateTaskData(req.params.id, { ...req.body, webhookBaseUrl: `${BASE_URL_PROTOCOL}://${req.get("host")}` });
   res.json({ ...updated, running: isRunning(updated.id) });
 });
@@ -2321,6 +2377,12 @@ app.patch("/api/tasks/:id/toggle", (req, res) => {
 app.post("/api/tasks/:id/trigger", (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "Task not found" });
+  if (isRunning(req.params.id)) return res.status(409).json({ error: "Task is already running" });
+  if (task.kind === "workflow") {
+    const result = triggerWorkflow(req.params.id);
+    if (!result) return res.status(409).json({ error: "Could not start workflow" });
+    return res.json({ ok: true, message: "Workflow triggered", runId: result.runId });
+  }
   const result = triggerTask(req.params.id);
   if (!result) return res.status(409).json({ error: "Task is already running" });
   const baseUrl = `${BASE_URL_PROTOCOL}://${req.get("host")}`;

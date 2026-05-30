@@ -11,6 +11,9 @@ import {
   subscribeAgent,
   unsubscribeAgent,
 } from "./agents.js";
+// Imported for its runtime use inside tick(); the tasks.js <-> workflow-engine.js
+// cycle is safe because executeWorkflow is only called at runtime, not eval time.
+import { executeWorkflow } from "./workflow-engine.js";
 const SUMMARY_INSTRUCTION = `\n\n---\n**IMPORTANT:** After completing your task, you MUST create a markdown file called \`summary.md\` in the current working directory with a complete summary of your findings, analysis, and results. All output files must be saved to the current working directory (the connected workspace).`;
 
 // Normalize workflow-related fields on a task object (mutates and returns it).
@@ -709,7 +712,8 @@ function tick() {
     if (!task.cronExpression) continue;
     if (runningJobs.has(id)) continue;
     if (task.nextRunAt && task.nextRunAt <= now) {
-      executeTask(id);
+      if (task.kind === "workflow") executeWorkflow(id);
+      else executeTask(id);
     }
   }
 }
