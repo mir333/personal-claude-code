@@ -61,8 +61,13 @@ Back-compat: existing tasks have no `kind` field and are treated as
 
 ## The DSL
 
-A workflow is a YAML document describing a directed graph of nodes. Four node
-types: `task`, `decision`, `fork`, `join`. `next: null` ends the workflow.
+A workflow is a structured document describing a directed graph of nodes. Four
+node types: `task`, `decision`, `fork`, `join`. `next: null` ends the workflow.
+
+> **Implementation note:** the on-disk/wire format is **JSON** (not YAML). This
+> avoids adding a YAML parser to both the server and the browser bundle, and lets
+> the editor lean on Monaco's native JSON support. The structure below is shown
+> in YAML for readability; the equivalent JSON is what `workflowSource` stores.
 
 ```yaml
 name: Security sweep
