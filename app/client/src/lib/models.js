@@ -1,9 +1,9 @@
 export const MODEL_OPTIONS = [
   {
-    value: "claude-opus-4-7",
-    label: "Opus 4.7",
-    description: "Most capable model. Best for complex reasoning and agentic coding. 1M context, 128k output.",
-    shortLabel: "opus-4.7",
+    value: "claude-opus-4-8",
+    label: "Opus 4.8",
+    description: "Most capable model. Complex reasoning and agentic coding. 1M context, 128k output, adaptive thinking.",
+    shortLabel: "opus-4.8",
   },
   {
     value: "claude-sonnet-4-6",
@@ -14,26 +14,32 @@ export const MODEL_OPTIONS = [
   {
     value: "claude-haiku-4-5",
     label: "Haiku 4.5",
-    description: "Fastest model with near-frontier intelligence. 200k context, 64k output.",
+    description: "Fastest and most cost-effective. 200k context, 64k output, extended thinking.",
     shortLabel: "haiku-4.5",
+  },
+  {
+    value: "claude-opus-4-7",
+    label: "Opus 4.7",
+    description: "Previous-gen Opus. Long-horizon agentic work. 1M context, 128k output, adaptive thinking.",
+    shortLabel: "opus-4.7",
   },
   {
     value: "claude-opus-4-6",
     label: "Opus 4.6",
-    description: "Previous-generation Opus. 1M context, 128k output, extended thinking.",
+    description: "Legacy Opus. 1M context, 128k output, extended thinking.",
     shortLabel: "opus-4.6",
-  },
-  {
-    value: "claude-opus-4-5",
-    label: "Opus 4.5",
-    description: "Earlier Opus generation. 200k context, 64k output.",
-    shortLabel: "opus-4.5",
   },
   {
     value: "claude-sonnet-4-5",
     label: "Sonnet 4.5",
-    description: "Previous Sonnet generation. 200k context, 64k output.",
+    description: "Legacy Sonnet. 200k context, 64k output, extended thinking.",
     shortLabel: "sonnet-4.5",
+  },
+  {
+    value: "claude-opus-4-5",
+    label: "Opus 4.5",
+    description: "Legacy Opus. 200k context, 64k output, extended thinking.",
+    shortLabel: "opus-4.5",
   },
 ];
 
