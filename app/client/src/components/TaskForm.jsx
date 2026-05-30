@@ -6,6 +6,8 @@ import { Dialog } from "@/components/ui/dialog";
 import { CRON_PRESETS, describeCron } from "@/lib/cron";
 import { MODEL_OPTIONS } from "@/lib/models";
 import { cn } from "@/lib/utils";
+import WorkflowGraph from "@/components/WorkflowGraph";
+import AuthoringDialog from "@/components/AuthoringDialog";
 
 export default function TaskForm({ open, onClose, onSubmit, initial }) {
   const [name, setName] = useState(initial?.name || "");
@@ -14,6 +16,10 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
   const [prompt, setPrompt] = useState(initial?.prompt || "");
   const [model, setModel] = useState(initial?.model || "");
   const [emails, setEmails] = useState(initial?.emails ? initial.emails.join(", ") : "");
+  const [kind, setKind] = useState(initial?.kind === "workflow" ? "workflow" : "task");
+  const [workflowSource, setWorkflowSource] = useState(initial?.workflowSource || "");
+  const [wfValidation, setWfValidation] = useState(null); // { valid, errors, graph }
+  const [showAuthoring, setShowAuthoring] = useState(false);
   const [workspaces, setWorkspaces] = useState([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(false);
   const [workspaceFilter, setWorkspaceFilter] = useState("");
@@ -33,6 +39,9 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
       setPrompt(initial?.prompt || "");
       setModel(initial?.model || "");
       setEmails(initial?.emails ? initial.emails.join(", ") : "");
+      setKind(initial?.kind === "workflow" ? "workflow" : "task");
+      setWorkflowSource(initial?.workflowSource || "");
+      setWfValidation(null);
       setError("");
       setCronError("");
       setWorkspaceFilter("");
@@ -82,6 +91,22 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
     return () => clearTimeout(timer);
   }, [cronExpression]);
 
+  // Validate workflow DSL (debounced) when in workflow mode
+  useEffect(() => {
+    if (kind !== "workflow" || !workflowSource.trim()) { setWfValidation(null); return; }
+    const timer = setTimeout(() => {
+      fetch("/api/tasks/validate-workflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflowSource }),
+      })
+        .then((r) => r.json())
+        .then((data) => setWfValidation(data))
+        .catch(() => setWfValidation(null));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [kind, workflowSource]);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
@@ -93,6 +118,8 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
         cronExpression: cronExpression.trim() || null,
         prompt: prompt.trim(),
         model: model || null,
+        kind,
+        workflowSource: kind === "workflow" ? workflowSource : null,
         emails: emails
           .split(",")
           .map((e) => e.trim())
@@ -142,6 +169,21 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6 max-w-5xl mx-auto">
             {/* Left Column */}
             <div className="space-y-6">
+              {/* Type */}
+              <div>
+                <label className="text-xs text-muted-foreground font-medium">Type</label>
+                <div className="flex gap-1 mt-1">
+                  {["task", "workflow"].map((k) => (
+                    <button key={k} type="button" onClick={() => setKind(k)}
+                      className={cn("px-3 py-1 text-xs rounded-md border capitalize",
+                        kind === k ? "bg-primary/20 text-primary border-primary/30"
+                                   : "bg-muted text-muted-foreground border-transparent")}>
+                      {k}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Name */}
               <div>
                 <label className="text-xs text-muted-foreground font-medium">Name</label>
@@ -337,20 +379,51 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
               </div>
             </div>
 
-            {/* Right Column - Prompt (takes up full height) */}
-            <div className="flex flex-col">
-              <label className="text-xs text-muted-foreground font-medium">Prompt</label>
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder={"e.g., Review all open PRs in this repository.\n1. Check out each branch\n2. Review the code changes\n3. Post a review comment with findings"}
-                className={cn(inputClass, "mt-1 flex-1 min-h-[320px] resize-y")}
-                required
-              />
-              <p className="text-[11px] text-muted-foreground/60 mt-1">
-                This prompt will be sent to a fresh Claude agent each time the task runs. The agent will have full access to the workspace directory.
-              </p>
-            </div>
+            {/* Right Column - Prompt or Workflow editor */}
+            {kind === "workflow" ? (
+              <div className="flex flex-col">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-muted-foreground font-medium">Workflow Definition (JSON)</label>
+                  <Button type="button" variant="outline" size="sm" className="h-7 text-xs"
+                    onClick={() => setShowAuthoring(true)}>Author with AI</Button>
+                </div>
+                <textarea
+                  value={workflowSource}
+                  onChange={(e) => setWorkflowSource(e.target.value)}
+                  placeholder={'{ "name": "My Workflow", "start": "step1", "nodes": { } }'}
+                  className={cn(inputClass, "mt-1 min-h-[220px] resize-y font-mono text-xs")}
+                />
+                {wfValidation && !wfValidation.valid && (
+                  <ul className="mt-2 text-[11px] text-destructive list-disc pl-4">
+                    {wfValidation.errors.slice(0, 8).map((er, i) => (
+                      <li key={i}>{er.nodeId ? `[${er.nodeId}] ` : ""}{er.message}</li>
+                    ))}
+                  </ul>
+                )}
+                {wfValidation?.graph && (
+                  <div className="mt-3 border border-border rounded-md p-2 overflow-auto max-h-[320px]">
+                    <WorkflowGraph graph={wfValidation.graph} startId={(() => { try { return JSON.parse(workflowSource).start; } catch { return null; } })()} />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-col">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-muted-foreground font-medium">Prompt</label>
+                  <Button type="button" variant="outline" size="sm" className="h-7 text-xs"
+                    onClick={() => setShowAuthoring(true)}>Author with AI</Button>
+                </div>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={"e.g., Review all open PRs in this repository.\n1. Check out each branch\n2. Review the code changes\n3. Post a review comment with findings"}
+                  className={cn(inputClass, "mt-1 flex-1 min-h-[320px] resize-y")}
+                />
+                <p className="text-[11px] text-muted-foreground/60 mt-1">
+                  This prompt will be sent to a fresh Claude agent each time the task runs. The agent will have full access to the workspace directory.
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -362,13 +435,20 @@ export default function TaskForm({ open, onClose, onSubmit, initial }) {
           </Button>
           <Button
             type="submit"
-            disabled={submitting || !name.trim() || !workingDirectory || !prompt.trim() || !!cronError || invalidEmails.length > 0}
+            disabled={submitting || !name.trim() || !workingDirectory || (kind === "task" && !prompt.trim()) || !!cronError || invalidEmails.length > 0 || (kind === "workflow" && wfValidation && !wfValidation.valid)}
           >
             {submitting && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
             {isEdit ? "Save Changes" : "Create Task"}
           </Button>
         </div>
       </form>
+      <AuthoringDialog
+        open={showAuthoring}
+        onClose={() => setShowAuthoring(false)}
+        mode={kind}
+        currentDraft={kind === "workflow" ? workflowSource : prompt}
+        onApply={(draft) => { if (kind === "workflow") setWorkflowSource(draft); else setPrompt(draft); }}
+      />
     </Dialog>
   );
 }
