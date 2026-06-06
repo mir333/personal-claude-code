@@ -21,6 +21,7 @@ import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useWorkspace } from "./hooks/useWorkspace.js";
 import { useNotifications } from "./hooks/useNotifications.js";
 import { useUsageStats } from "./hooks/useUsageStats.js";
+import { useUsageWindow } from "./hooks/useUsageWindow.js";
 import { useSuggestions } from "./hooks/useSuggestions.js";
 import SuggestionManager from "./components/SuggestionManager.jsx";
 import StatusBar from "./components/StatusBar.jsx";
@@ -49,6 +50,7 @@ export default function App() {
   const { projects, fetchDirectories, loaded: projectsLoaded } = useWorkspace();
   const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
+  const { window: planWindow } = useUsageWindow();
   const {
     suggestions: allSuggestions,
     fetchSuggestions,
@@ -1047,6 +1049,7 @@ export default function App() {
             usage={usage}
             connected={connected}
             contextInfo={contextInfo}
+            planWindow={planWindow}
             onClearContext={selectedAgentId ? handleClearContext : null}
             onCompact={selectedAgentId ? handleCompact : null}
             className="flex-1 border-b-0"

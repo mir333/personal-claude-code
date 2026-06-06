@@ -1,4 +1,5 @@
-import { Activity, Coins, ArrowDownToLine, ArrowUpFromLine, Database, CalendarDays, Gauge, AlertTriangle, Eraser, Minimize2 } from "lucide-react";
+import { Activity, Coins, ArrowDownToLine, ArrowUpFromLine, Database, CalendarDays, Gauge, AlertTriangle, Eraser, Minimize2, Hourglass } from "lucide-react";
+import { useState, useEffect } from "react";
 import { Separator } from "@/components/ui/separator";
 
 function formatTokens(n) {
@@ -22,6 +23,29 @@ function contextColor(pct) {
   return "bg-green-500";
 }
 
+function windowColor(pct) {
+  if (pct >= 90) return "bg-red-500";
+  if (pct >= 70) return "bg-yellow-500";
+  return "bg-green-500";
+}
+
+function formatCountdown(ms) {
+  if (ms <= 0) return "0m";
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
+function ResetCountdown({ resetAt }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return <span>resets in {formatCountdown(resetAt - now)}</span>;
+}
+
 function ModelCosts({ modelCosts, prefix }) {
   const entries = Object.entries(modelCosts || {});
   if (entries.length === 0) return null;
@@ -38,7 +62,7 @@ function ModelCosts({ modelCosts, prefix }) {
   ));
 }
 
-export default function StatusBar({ usage, connected, contextInfo, onClearContext, onCompact, className }) {
+export default function StatusBar({ usage, connected, contextInfo, planWindow, onClearContext, onCompact, className }) {
   const { session, weekly } = usage;
   const pct = contextInfo ? Math.min(100, (contextInfo.used / contextInfo.contextWindow) * 100) : 0;
 
@@ -97,6 +121,32 @@ export default function StatusBar({ usage, connected, contextInfo, onClearContex
           )}
         </>
       )}
+
+      {planWindow && (() => {
+        const limit = planWindow.limit || 1;
+        const pct = planWindow.active ? Math.min(100, (planWindow.usedTokens / limit) * 100) : 0;
+        return (
+          <>
+            <Separator orientation="vertical" className="h-3 shrink-0" />
+            <span
+              className="flex items-center gap-1.5 shrink-0"
+              title={`Plan ${planWindow.planId}: ${formatTokens(planWindow.usedTokens)} / ${formatTokens(limit)} tokens in the current 5-hour window (${pct.toFixed(0)}%)`}
+            >
+              <Hourglass className="h-3 w-3" />
+              <span className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+                <span
+                  className={`block h-full rounded-full transition-all ${windowColor(pct)}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </span>
+              <span>{formatTokens(planWindow.usedTokens)}/{formatTokens(limit)}</span>
+              {planWindow.active && planWindow.resetAt
+                ? <span className="text-muted-foreground/70"><ResetCountdown resetAt={planWindow.resetAt} /></span>
+                : <span className="text-muted-foreground/70">idle</span>}
+            </span>
+          </>
+        );
+      })()}
 
       {/* Consumption stats - hidden on mobile */}
       <Separator orientation="vertical" className="h-3 shrink-0 hidden md:block" />
