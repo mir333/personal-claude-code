@@ -28,7 +28,6 @@ import {
 import { loadConversation } from "./storage.js";
 import { getUsageStats } from "./usage.js";
 import { readWindow } from "./usageWindow.js";
-import { loadUsagePlan, saveUsagePlan, PLAN_LIMITS, PLANS, normalizePlanId } from "./usagePlan.js";
 import {
   spawnTerminal,
   getTerminal,
@@ -1424,25 +1423,9 @@ app.get("/api/workspace", async (req, res) => {
   }
 });
 
-app.get("/api/usage/window", (req, res) => {
-  const profileId = req.profile?.id || null;
-  const { planId } = loadUsagePlan(profileId);
-  const limit = PLAN_LIMITS[planId];
-  const w = readWindow();
-  res.json({ ...w, planId, limit });
-});
-
-app.get("/api/usage-plan", (req, res) => {
-  const profileId = req.profile?.id || null;
-  const { planId } = loadUsagePlan(profileId);
-  res.json({ planId, limit: PLAN_LIMITS[planId], plans: PLANS });
-});
-
-app.post("/api/usage-plan", (req, res) => {
-  const profileId = req.profile?.id || null;
-  const planId = normalizePlanId(req.body?.planId);
-  saveUsagePlan(profileId, { planId });
-  res.json({ planId, limit: PLAN_LIMITS[planId], plans: PLANS });
+app.get("/api/usage/window", async (req, res) => {
+  const w = await readWindow();
+  res.json(w);
 });
 
 app.get("/api/usage", (req, res) => {

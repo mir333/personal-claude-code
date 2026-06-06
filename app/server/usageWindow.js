@@ -2,150 +2,78 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 
-export const WINDOW_MS = 5 * 60 * 60 * 1000; // 5 hours
-const HOUR_MS = 60 * 60 * 1000;
-const SCAN_MAX_AGE_MS = 6 * 60 * 60 * 1000; // only parse files touched in last 6h
+// Anthropic's authoritative OAuth usage endpoint. Returns server-computed
+// utilization percentages for the rolling 5-hour and 7-day plan windows — the
+// same numbers Claude Code itself uses. This is accurate by construction, unlike
+// estimating from local JSONL token counts.
+const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CACHE_TTL_MS = 30_000;
+const FETCH_TIMEOUT_MS = 5_000;
 
-/** Counted token measure: input + output + cache_creation (excludes cache_read). */
-export function countTokens(usage) {
-  if (!usage) return 0;
-  return (
-    (usage.input_tokens || 0) +
-    (usage.output_tokens || 0) +
-    (usage.cache_creation_input_tokens || 0)
-  );
+function credentialsPath() {
+  const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  return path.join(dir, ".credentials.json");
+}
+
+/** Read the Claude Code OAuth access token from the credentials file (or null). */
+export function readOAuthToken() {
+  try {
+    const json = JSON.parse(fs.readFileSync(credentialsPath(), "utf-8"));
+    return json.claudeAiOauth?.accessToken || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Pure: given parsed entries [{ ts (ms), id, usage }] and `now` (ms), group into
- * 5-hour blocks and return the active window.
- * Returns { active, usedTokens, windowStart, resetAt }.
+ * Pure: map the usage endpoint JSON into our shape.
+ * Returns { fiveHour, sevenDay } where each is { utilization, resetAt } or null.
+ * `utilization` is a 0-100 percentage; `resetAt` is epoch ms (or null).
  */
-export function computeWindow(entries, now) {
-  // Dedup by message id (keep first occurrence).
-  const seen = new Set();
-  const deduped = [];
-  for (const e of entries) {
-    if (e.id != null) {
-      if (seen.has(e.id)) continue;
-      seen.add(e.id);
-    }
-    deduped.push(e);
-  }
-  deduped.sort((a, b) => a.ts - b.ts);
-
-  // Build blocks: start at floor(first ts to the hour); new block when an entry
-  // is >= 5h after the block start OR the gap since the previous entry is > 5h.
-  let blockStart = null;
-  let lastTs = null;
-  let blockTokens = 0;
-  let blockLatestTs = null;
-
-  const blocks = [];
-  const flush = () => {
-    if (blockStart != null) {
-      blocks.push({ start: blockStart, tokens: blockTokens, latestTs: blockLatestTs });
-    }
+export function parseUsage(data) {
+  const pick = (o) => {
+    if (!o || typeof o.utilization !== "number") return null;
+    const resetAt = o.resets_at ? Date.parse(o.resets_at) : null;
+    return { utilization: o.utilization, resetAt: Number.isNaN(resetAt) ? null : resetAt };
   };
-
-  for (const e of deduped) {
-    if (
-      blockStart == null ||
-      e.ts >= blockStart + WINDOW_MS ||
-      (lastTs != null && e.ts - lastTs > WINDOW_MS)
-    ) {
-      flush();
-      blockStart = Math.floor(e.ts / HOUR_MS) * HOUR_MS;
-      blockTokens = 0;
-      blockLatestTs = e.ts;
-    }
-    blockTokens += countTokens(e.usage);
-    blockLatestTs = e.ts;
-    lastTs = e.ts;
-  }
-  flush();
-
-  const idle = { active: false, usedTokens: 0, windowStart: null, resetAt: null };
-  if (blocks.length === 0) return idle;
-
-  const last = blocks[blocks.length - 1];
-  // Active only if the window is still open (now before reset).
-  if (now >= last.start + WINDOW_MS) return idle;
-  return {
-    active: true,
-    usedTokens: last.tokens,
-    windowStart: last.start,
-    resetAt: last.start + WINDOW_MS,
-  };
-}
-
-// --- Filesystem scan + cache (verified manually, not unit-tested) ---
-
-function projectsDir() {
-  return path.join(os.homedir(), ".claude", "projects");
-}
-
-function* walkJsonlFiles(dir) {
-  let entries;
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const ent of entries) {
-    const full = path.join(dir, ent.name);
-    if (ent.isDirectory()) {
-      yield* walkJsonlFiles(full);
-    } else if (ent.isFile() && ent.name.endsWith(".jsonl")) {
-      yield full;
-    }
-  }
-}
-
-function parseEntriesFromFile(file) {
-  const out = [];
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf-8");
-  } catch {
-    return out;
-  }
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    let o;
-    try {
-      o = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const msg = o.message;
-    if (!msg || !msg.usage || !o.timestamp) continue;
-    const ts = Date.parse(o.timestamp);
-    if (Number.isNaN(ts)) continue;
-    out.push({ ts, id: msg.id || null, usage: msg.usage });
-  }
-  return out;
+  return { fiveHour: pick(data?.five_hour), sevenDay: pick(data?.seven_day) };
 }
 
 let _cache = { at: 0, value: null };
 
-/** Scan recent JSONL files and compute the active window. Cached for 30s. */
-export function readWindow(now = Date.now()) {
+const UNAVAILABLE = { available: false, fiveHour: null, sevenDay: null };
+
+/**
+ * Fetch the live plan-window utilization from Anthropic's OAuth usage endpoint.
+ * Cached for 30s. Returns { available, fiveHour, sevenDay }. On any error (no
+ * token, network failure, non-200) returns { available: false }.
+ */
+export async function readWindow(now = Date.now()) {
   if (_cache.value && now - _cache.at < CACHE_TTL_MS) return _cache.value;
-  const entries = [];
-  const cutoff = now - SCAN_MAX_AGE_MS;
-  for (const file of walkJsonlFiles(projectsDir())) {
-    let stat;
-    try {
-      stat = fs.statSync(file);
-    } catch {
-      continue;
-    }
-    if (stat.mtimeMs < cutoff) continue;
-    for (const e of parseEntriesFromFile(file)) entries.push(e);
+
+  const token = readOAuthToken();
+  if (!token) {
+    _cache = { at: now, value: UNAVAILABLE };
+    return UNAVAILABLE;
   }
-  const value = computeWindow(entries, now);
+
+  let value = UNAVAILABLE;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const res = await fetch(USAGE_URL, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      value = { available: true, ...parseUsage(data) };
+    }
+  } catch {
+    value = UNAVAILABLE;
+  }
+
   _cache = { at: now, value };
   return value;
 }

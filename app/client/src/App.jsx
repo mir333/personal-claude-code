@@ -50,7 +50,7 @@ export default function App() {
   const { projects, fetchDirectories, loaded: projectsLoaded } = useWorkspace();
   const { enabled: notificationsEnabled, permissionDenied: notificationsPermissionDenied, toggle: toggleNotifications, notify } = useNotifications();
   const { usage, refresh: refreshUsage } = useUsageStats();
-  const { window: planWindow } = useUsageWindow();
+  const { window: usageWindow } = useUsageWindow();
   const {
     suggestions: allSuggestions,
     fetchSuggestions,
@@ -1049,7 +1049,7 @@ export default function App() {
             usage={usage}
             connected={connected}
             contextInfo={contextInfo}
-            planWindow={planWindow}
+            usageWindow={usageWindow}
             onClearContext={selectedAgentId ? handleClearContext : null}
             onCompact={selectedAgentId ? handleCompact : null}
             className="flex-1 border-b-0"

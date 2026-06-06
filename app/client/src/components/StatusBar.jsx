@@ -62,7 +62,7 @@ function ModelCosts({ modelCosts, prefix }) {
   ));
 }
 
-export default function StatusBar({ usage, connected, contextInfo, planWindow, onClearContext, onCompact, className }) {
+export default function StatusBar({ usage, connected, contextInfo, usageWindow, onClearContext, onCompact, className }) {
   const { session, weekly } = usage;
   const pct = contextInfo ? Math.min(100, (contextInfo.used / contextInfo.contextWindow) * 100) : 0;
 
@@ -122,15 +122,15 @@ export default function StatusBar({ usage, connected, contextInfo, planWindow, o
         </>
       )}
 
-      {planWindow && (() => {
-        const limit = planWindow.limit || 1;
-        const pct = planWindow.active ? Math.min(100, (planWindow.usedTokens / limit) * 100) : 0;
+      {usageWindow && usageWindow.available && usageWindow.fiveHour && (() => {
+        const pct = Math.min(100, Math.max(0, usageWindow.fiveHour.utilization));
+        const sevenPct = usageWindow.sevenDay ? Math.round(usageWindow.sevenDay.utilization) : null;
         return (
           <>
             <Separator orientation="vertical" className="h-3 shrink-0" />
             <span
               className="flex items-center gap-1.5 shrink-0"
-              title={`Plan ${planWindow.planId}: ${formatTokens(planWindow.usedTokens)} / ${formatTokens(limit)} tokens in the current 5-hour window (${pct.toFixed(0)}%)`}
+              title={`Plan usage — 5-hour window: ${pct.toFixed(0)}%${usageWindow.fiveHour.resetAt ? ` (resets ${new Date(usageWindow.fiveHour.resetAt).toLocaleString()})` : ""}${sevenPct != null ? `; 7-day: ${sevenPct}%` : ""}`}
             >
               <Hourglass className="h-3 w-3" />
               <span className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
@@ -139,10 +139,13 @@ export default function StatusBar({ usage, connected, contextInfo, planWindow, o
                   style={{ width: `${pct}%` }}
                 />
               </span>
-              <span>{formatTokens(planWindow.usedTokens)}/{formatTokens(limit)}</span>
-              {planWindow.active && planWindow.resetAt
-                ? <span className="text-muted-foreground/70"><ResetCountdown resetAt={planWindow.resetAt} /></span>
-                : <span className="text-muted-foreground/70">idle</span>}
+              <span>{pct.toFixed(0)}%</span>
+              {usageWindow.fiveHour.resetAt && (
+                <span className="text-muted-foreground/70"><ResetCountdown resetAt={usageWindow.fiveHour.resetAt} /></span>
+              )}
+              {sevenPct != null && (
+                <span className="text-muted-foreground/60 hidden md:inline">· 7d {sevenPct}%</span>
+              )}
             </span>
           </>
         );

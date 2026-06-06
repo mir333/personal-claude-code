@@ -1,5 +1,16 @@
 # Plan-Window Usage in the Status Bar — Design
 
+> **Correction (superseded approach):** The original design below estimated usage
+> by summing tokens from local `~/.claude/projects/**/*.jsonl` transcripts. That
+> cannot match Anthropic's real plan accounting (it pegged at 100% for heavy
+> users). The implementation now reads the **authoritative** OAuth usage endpoint
+> `GET https://api.anthropic.com/api/oauth/usage` (Bearer token from
+> `~/.claude/.credentials.json` → `claudeAiOauth.accessToken`), returning
+> server-computed `five_hour.utilization` / `seven_day.utilization` percentages
+> and `resets_at` timestamps. The plan-limit selector and token-counting heuristic
+> are removed — the server already knows the plan and returns a percentage.
+> Approach credit: github.com/Haletran/claude-usage-extension.
+
 ## Overview
 
 Add a status-bar segment that shows the current **5-hour rolling Claude plan

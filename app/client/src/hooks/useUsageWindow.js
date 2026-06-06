@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 
-const EMPTY = { active: false, usedTokens: 0, limit: 88000, planId: "max5", windowStart: null, resetAt: null };
+const EMPTY = { available: false, fiveHour: null, sevenDay: null };
 
 export function useUsageWindow(intervalMs = 60_000) {
   const [window, setWindow] = useState(EMPTY);

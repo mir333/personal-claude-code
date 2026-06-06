@@ -408,7 +408,6 @@ const SETTINGS_TABS = [
   { id: "apitokens", label: "API Tokens" },
   { id: "envvars", label: "Env Vars" },
   { id: "resend", label: "Resend" },
-  { id: "plan", label: "Plan" },
 ];
 
 const PROVIDER_HINTS = {
@@ -1060,76 +1059,6 @@ function EnvVarsTab() {
 }
 
 /**
- * Plan tab — lets the user pick their Claude plan, which sets the token limit
- * shown in the status-bar 5-hour usage window.
- */
-function PlanTab() {
-  const [planId, setPlanId] = useState("max5");
-  const [plans, setPlans] = useState([]);
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/usage-plan")
-      .then((r) => r.json())
-      .then((data) => {
-        setPlanId(data.planId || "max5");
-        setPlans(data.plans || []);
-        setLoaded(true);
-      })
-      .catch(() => setLoaded(true));
-  }, []);
-
-  async function save(next) {
-    setPlanId(next);
-    setSaving(true);
-    setSaved(false);
-    try {
-      await fetch("/api/usage-plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ planId: next }),
-      });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1500);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (!loaded) return <div className="text-sm text-muted-foreground py-4">Loading...</div>;
-
-  return (
-    <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">
-        Your Claude plan determines the token limit shown in the status bar for the
-        current 5-hour usage window.
-      </p>
-      <div className="flex flex-col gap-2">
-        {plans.map((p) => (
-          <label key={p.id} className="flex items-center gap-2 text-sm cursor-pointer">
-            <input
-              type="radio"
-              name="plan"
-              value={p.id}
-              checked={planId === p.id}
-              onChange={() => save(p.id)}
-            />
-            <span className="font-medium">{p.label}</span>
-            <span className="text-muted-foreground text-xs">
-              {(p.limit / 1000).toFixed(0)}k tokens / 5h
-            </span>
-          </label>
-        ))}
-      </div>
-      {saving && <span className="text-xs text-muted-foreground">Saving…</span>}
-      {saved && <span className="text-xs text-green-500">Saved</span>}
-    </div>
-  );
-}
-
-/**
  * Resend tab — lets the user configure their Resend API token for
  * email notifications on task run completion.
  */
@@ -1352,7 +1281,6 @@ function GitSettingsPanel({ onClose, agents }) {
           {activeTab === "apitokens" && <ApiTokensTab />}
           {activeTab === "envvars" && <EnvVarsTab />}
           {activeTab === "resend" && <ResendTab />}
-          {activeTab === "plan" && <PlanTab />}
         </>
       )}
     </div>
@@ -1546,7 +1474,7 @@ export default function Sidebar({
         )}
       </div>
       <Separator />
-      <Dialog open={showSettings} onClose={() => setShowSettings(false)} className="max-w-lg">
+      <Dialog open={showSettings} onClose={() => setShowSettings(false)} className="max-w-3xl w-full">
         <GitSettingsPanel onClose={() => setShowSettings(false)} agents={agents} />
       </Dialog>
       <ScrollArea className="flex-1">
