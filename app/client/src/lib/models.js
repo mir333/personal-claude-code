@@ -1,8 +1,14 @@
 export const MODEL_OPTIONS = [
   {
+    value: "claude-fable-5-1",
+    label: "Fable 5.1",
+    description: "Most capable model. Long-running agentic coding, knowledge work, and research. 1M context, 128k output, adaptive thinking.",
+    shortLabel: "fable-5.1",
+  },
+  {
     value: "claude-fable-5",
     label: "Fable 5",
-    description: "Most capable model. Next-gen intelligence for long-running agents. 1M context, 128k output, adaptive thinking.",
+    description: "Next-gen intelligence for long-running agents. 1M context, 128k output, adaptive thinking.",
     shortLabel: "fable-5",
   },
   {
