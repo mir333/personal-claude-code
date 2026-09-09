@@ -3,7 +3,7 @@ import path from "path";
 import https from "https";
 import crypto from "crypto";
 import { execFile } from "child_process";
-import { getProfilePaths } from "./profiles.js";
+import { getProfilePaths, getProfileIdForWorkspacePath } from "./profiles.js";
 
 const LEGACY_GIT_DIR = "/home/node/.claude/git";
 
@@ -253,6 +253,16 @@ export function gitEnvForProfile(profileId) {
   return {
     GIT_CONFIG_GLOBAL: path.join(gitDir, "gitconfig"),
   };
+}
+
+/**
+ * Git env for whichever profile owns `targetPath` (by its /workspace/<slug>
+ * prefix). Falls back to the legacy git dir when the path maps to no profile,
+ * mirroring gitEnvForProfile(null). Preserves per-profile isolation: each
+ * profile's repos resolve to that profile's gitconfig and credentials.
+ */
+export function gitEnvForWorkspacePath(targetPath) {
+  return gitEnvForProfile(getProfileIdForWorkspacePath(targetPath));
 }
 
 export async function configureLocalGit(dir, profileId) {
