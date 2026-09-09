@@ -140,6 +140,26 @@ export function getProfilePaths(profileId) {
   };
 }
 
+/**
+ * Resolve the profile that owns a filesystem path by its `/workspace/<slug>`
+ * prefix. A repo under `/workspace/alice/...` belongs to the profile whose slug
+ * is `alice`. Returns null for paths outside a known profile workspace.
+ *
+ * This is the single source of truth for path -> profile resolution; keep the
+ * shell mirror in bin/git-profile-env.sh in sync with the slug-matching logic.
+ */
+export function getProfileByWorkspacePath(targetPath) {
+  const match = String(targetPath || "").match(/^\/workspace\/([^/]+)(?:\/|$)/);
+  if (!match) return null;
+  const slug = match[1];
+  return loadProfiles().find((p) => p.slug === slug) || null;
+}
+
+export function getProfileIdForWorkspacePath(targetPath) {
+  const profile = getProfileByWorkspacePath(targetPath);
+  return profile ? profile.id : null;
+}
+
 function initializeProfileDirs(profileId) {
   const gitDir = path.join(PROFILES_DIR, profileId, "git");
   fs.mkdirSync(gitDir, { recursive: true });
