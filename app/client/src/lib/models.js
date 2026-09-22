@@ -1,21 +1,15 @@
 export const MODEL_OPTIONS = [
   {
+    value: "claude-opus-5-5",
+    label: "Opus 5.5",
+    description: "Recommended for most workloads. Long-running agentic coding and knowledge work. 1M context, 128k output, adaptive thinking.",
+    shortLabel: "opus-5.5",
+  },
+  {
     value: "claude-fable-5-1",
     label: "Fable 5.1",
-    description: "Most capable model. Long-running agentic coding, knowledge work, and research. 1M context, 128k output, adaptive thinking.",
+    description: "Most capable model. Demanding reasoning and long-horizon agentic work. 1M context, 128k output, adaptive thinking.",
     shortLabel: "fable-5.1",
-  },
-  {
-    value: "claude-fable-5",
-    label: "Fable 5",
-    description: "Next-gen intelligence for long-running agents. 1M context, 128k output, adaptive thinking.",
-    shortLabel: "fable-5",
-  },
-  {
-    value: "claude-opus-5",
-    label: "Opus 5",
-    description: "Complex agentic coding and enterprise work. 1M context, 128k output, adaptive thinking.",
-    shortLabel: "opus-5",
   },
   {
     value: "claude-sonnet-5",
@@ -28,6 +22,18 @@ export const MODEL_OPTIONS = [
     label: "Haiku 4.5",
     description: "Fastest model with near-frontier intelligence. 200k context, 64k output, extended thinking.",
     shortLabel: "haiku-4.5",
+  },
+  {
+    value: "claude-fable-5",
+    label: "Fable 5",
+    description: "Legacy. Long-horizon agentic work. 1M context, 128k output, adaptive thinking.",
+    shortLabel: "fable-5",
+  },
+  {
+    value: "claude-opus-5",
+    label: "Opus 5",
+    description: "Legacy Opus. Agentic coding and enterprise work. 1M context, 128k output, adaptive thinking.",
+    shortLabel: "opus-5",
   },
   {
     value: "claude-opus-4-8",
