@@ -12,7 +12,7 @@ git config --global credential.helper "store --file $GIT_PERSIST_DIR/git-credent
 
 # Check for Claude credentials on first start
 CLAUDE_CREDS="${CLAUDE_CONFIG_DIR:=/home/node/.claude}/.credentials.json"
-if [ ! -f "$CLAUDE_CREDS" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+if [ ! -f "$CLAUDE_CREDS" ] && [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
   echo ""
   echo "=============================================="
   echo "  Claude API Key / Authentication Not Found"
@@ -27,7 +27,13 @@ if [ ! -f "$CLAUDE_CREDS" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
   echo "    3. Follow the browser-based login flow"
   echo "    4. Tokens are saved automatically"
   echo ""
-  echo "  Option 2: API Key"
+  echo "  Option 2: Long-lived OAuth token (Pro/Max)"
+  echo "    1. Run \`claude setup-token\` on any machine"
+  echo "    2. Add to docker-compose.yml environment:"
+  echo "      CLAUDE_CODE_OAUTH_TOKEN: \"sk-ant-oat01-...\""
+  echo "    3. Restart: docker compose up -d"
+  echo ""
+  echo "  Option 3: API Key"
   echo "    Add to docker-compose.yml environment:"
   echo "      ANTHROPIC_API_KEY: \"sk-ant-...\""
   echo "    Then restart: docker compose up -d"

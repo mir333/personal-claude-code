@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseUsage } from "./usageWindow.js";
+import { parseUsage, readOAuthToken } from "./usageWindow.js";
 
 const SAMPLE = {
   five_hour: { utilization: 41.0, resets_at: "2026-06-06T09:00:00.853176+00:00" },
@@ -43,4 +43,15 @@ test("parseUsage handles empty input", () => {
   const r = parseUsage(undefined);
   assert.equal(r.fiveHour, null);
   assert.equal(r.sevenDay, null);
+});
+
+test("readOAuthToken prefers CLAUDE_CODE_OAUTH_TOKEN", () => {
+  const prev = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-test";
+  try {
+    assert.equal(readOAuthToken(), "sk-ant-oat01-test");
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = prev;
+  }
 });

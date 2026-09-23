@@ -31,6 +31,7 @@ services:
       NODE_OPTIONS: "--max-old-space-size=4096"
       CLAUDE_CONFIG_DIR: "/home/node/.claude"
       POWERLEVEL9K_DISABLE_GITSTATUS: "true"
+      # CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-..."  # Long-lived Pro/Max token from `claude setup-token`
       # AUTH_PASSWORD: "changeme"  # Uncomment to enable password authentication
 
     # From workspaceMount + mounts

@@ -345,6 +345,12 @@ app.get("/api/claude-status", (_req, res) => {
     console.error(`[api] /api/claude-status failed to parse credentials at ${credsPath}:`, err.message);
   }
 
+  // Long-lived OAuth token from `claude setup-token`
+  if (!hasCredentials && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+    hasCredentials = true;
+    authMethod = "oauth_token";
+  }
+
   // Also check for API key in environment
   if (!hasCredentials && process.env.ANTHROPIC_API_KEY) {
     hasCredentials = true;

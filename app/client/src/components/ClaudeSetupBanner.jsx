@@ -69,11 +69,39 @@ export default function ClaudeSetupBanner() {
             </div>
           </div>
 
-          {/* Option 2: API Key */}
+          {/* Option 2: Long-lived OAuth token */}
           <div className="rounded-lg border border-border bg-card/50 p-4">
             <div className="flex items-center gap-2 mb-2">
               <Key className="h-4 w-4 text-primary" />
-              <h4 className="text-sm font-semibold text-foreground">Option 2: API Key</h4>
+              <h4 className="text-sm font-semibold text-foreground">Option 2: Long-lived OAuth Token (Claude Pro/Max)</h4>
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              Generate a token without logging in inside the container.
+            </p>
+            <div className="space-y-2">
+              <Step number={1}>
+                On any machine with the Claude CLI, run:
+                <Code>claude setup-token</Code>
+              </Step>
+              <Step number={2}>
+                Add the token to your <Code inline>docker-compose.yml</Code> environment section:
+                <Code>
+{`environment:
+  CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-..."`}
+                </Code>
+              </Step>
+              <Step number={3}>
+                Restart the container:
+                <Code>docker compose up -d</Code>
+              </Step>
+            </div>
+          </div>
+
+          {/* Option 3: API Key */}
+          <div className="rounded-lg border border-border bg-card/50 p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Key className="h-4 w-4 text-primary" />
+              <h4 className="text-sm font-semibold text-foreground">Option 3: API Key</h4>
             </div>
             <p className="text-xs text-muted-foreground mb-3">
               Use an Anthropic API key from{" "}

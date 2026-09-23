@@ -15,8 +15,12 @@ function credentialsPath() {
   return path.join(dir, ".credentials.json");
 }
 
-/** Read the Claude Code OAuth access token from the credentials file (or null). */
+/**
+ * Read the Claude Code OAuth access token (or null). CLAUDE_CODE_OAUTH_TOKEN
+ * (from `claude setup-token`) wins over the credentials file, matching the CLI.
+ */
 export function readOAuthToken() {
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return process.env.CLAUDE_CODE_OAUTH_TOKEN;
   try {
     const json = JSON.parse(fs.readFileSync(credentialsPath(), "utf-8"));
     return json.claudeAiOauth?.accessToken || null;
